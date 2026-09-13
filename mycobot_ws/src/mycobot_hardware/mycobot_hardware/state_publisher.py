@@ -8,7 +8,11 @@ import threading
 import time
 
 import rclpy
-from mycobot_interfaces.srv import MoveJoint, SetGripper
+from mycobot_interfaces.srv import (
+    MoveJoint,
+    MoveJoints,
+    SetGripper,
+)
 from pymycobot import MyCobot280
 from rclpy.callback_groups import (
     MutuallyExclusiveCallbackGroup,
@@ -55,6 +59,7 @@ class MyCobotStatePublisher(Node):
         self.declare_parameter("max_speed", 10)
         self.declare_parameter("joint_limit_margin_degrees", 2.0)
         self.declare_parameter("motion_enabled", False)
+        self.declare_parameter("multi_joint_motion_enabled", False)
         self.declare_parameter("motion_timeout_seconds", 6.0)
         self.declare_parameter("position_tolerance_degrees", 1.5)
         self.declare_parameter("motion_poll_period_seconds", 0.2)
@@ -78,6 +83,9 @@ class MyCobotStatePublisher(Node):
         )
         self.motion_enabled = bool(
             self.get_parameter("motion_enabled").value
+        )
+        self.multi_joint_motion_enabled = bool(
+            self.get_parameter("multi_joint_motion_enabled").value
         )
         self.motion_timeout = float(
             self.get_parameter("motion_timeout_seconds").value
@@ -183,6 +191,12 @@ class MyCobotStatePublisher(Node):
             self.handle_move_joint,
             callback_group=self.motion_callback_group,
         )
+        self.move_joints_service = self.create_service(
+            MoveJoints,
+            "mycobot/move_joints",
+            self.handle_move_joints,
+            callback_group=self.motion_callback_group,
+        )
         self.gripper_service = self.create_service(
             SetGripper,
             "mycobot/set_gripper",
@@ -201,6 +215,10 @@ class MyCobotStatePublisher(Node):
         )
         self.get_logger().info(
             f"Physical motion enabled: {self.motion_enabled}"
+        )
+        self.get_logger().info(
+            "Multi-joint motion enabled: "
+            f"{self.multi_joint_motion_enabled}"
         )
 
     def handle_status(self, request, response):
@@ -456,6 +474,126 @@ class MyCobotStatePublisher(Node):
 
         except Exception as error:
             response.message = f"Gripper command failed: {error}"
+            return response
+
+    def handle_move_joints(self, request, response):
+        """Validate a six-joint pose command without executing it yet."""
+        response.success = False
+        response.message = ""
+        response.start_degrees = [math.nan] * 6
+        response.final_degrees = [math.nan] * 6
+
+        targets = [float(value) for value in request.target_degrees]
+        speed = int(request.speed)
+
+        if len(targets) != 6:
+            response.message = "Exactly six joint targets are required"
+            return response
+
+        if not all(math.isfinite(value) for value in targets):
+            response.message = "All joint targets must be finite"
+            return response
+
+        if speed < 1 or speed > self.max_speed:
+            response.message = (
+                f"speed must be between 1 and {self.max_speed}"
+            )
+            return response
+
+        try:
+            with self.serial_mutex:
+                connected = self.robot.is_controller_connected()
+                power_state = self.robot.is_power_on()
+                error_state = self.robot.get_error_information()
+                moving = self.robot.is_moving()
+                angles = self.robot.get_angles()
+
+            if connected != 1:
+                response.message = "Robot controller is not connected"
+                return response
+
+            if power_state != 1:
+                response.message = "Robot is not powered on"
+                return response
+
+            if error_state != 0:
+                response.message = (
+                    f"Robot reports error code {error_state}"
+                )
+                return response
+
+            if moving != 0:
+                response.message = "Robot is already moving"
+                return response
+
+            if not isinstance(angles, list) or len(angles) != 6:
+                response.message = f"Invalid joint feedback: {angles}"
+                return response
+
+            starts = [float(value) for value in angles]
+
+            if not all(math.isfinite(value) for value in starts):
+                response.message = "Current joint feedback is invalid"
+                return response
+
+            response.start_degrees = starts
+            response.final_degrees = starts
+
+            movements = []
+
+            for joint_id, (start, target) in enumerate(
+                zip(starts, targets),
+                start=1,
+            ):
+                lower, upper = self.JOINT_LIMITS_DEGREES[joint_id]
+                safe_lower = lower + self.joint_limit_margin
+                safe_upper = upper - self.joint_limit_margin
+
+                if target < safe_lower or target > safe_upper:
+                    response.message = (
+                        f"J{joint_id} target {target:.2f}° is outside "
+                        f"safe range [{safe_lower:.2f}°, "
+                        f"{safe_upper:.2f}°]"
+                    )
+                    return response
+
+                movement = abs(target - start)
+                movements.append(movement)
+
+                if movement > self.max_joint_step:
+                    response.message = (
+                        f"J{joint_id} movement {movement:.2f}° exceeds "
+                        f"the {self.max_joint_step:.2f}° limit"
+                    )
+                    return response
+
+            maximum_movement = max(movements)
+
+            if not request.execute:
+                response.success = True
+                response.message = (
+                    "DRY RUN accepted: six-joint pose, "
+                    f"maximum movement {maximum_movement:.2f}°, "
+                    f"speed {speed}"
+                )
+                return response
+
+            if not self.multi_joint_motion_enabled:
+                response.message = (
+                    "Validation passed, but "
+                    "multi_joint_motion_enabled is false"
+                )
+                return response
+
+            response.message = (
+                "Multi-joint execution is not implemented yet"
+            )
+            return response
+
+        except Exception as error:
+            response.message = (
+                f"Multi-joint validation failed: {error}"
+            )
             return response
 
     def handle_move_joint(self, request, response):

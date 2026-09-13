@@ -19,3 +19,5 @@ mycobot_state_publisher:
     gripper_settle_seconds: 2.0
     gripper_open_min_value: 90
     gripper_closed_max_value: 10
+
+    multi_joint_motion_enabled: false
