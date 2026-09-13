@@ -417,6 +417,13 @@ class MyCobotStatePublisher(Node):
                     gripper_moving = self.robot.is_gripper_moving()
                     updated_error = self.robot.get_error_information()
 
+                if self.stop_requested.is_set():
+                    response.final_value = final_value
+                    response.message = (
+                        "Gripper operation interrupted by a stop request"
+                    )
+                    return response
+
                 if updated_error != 0:
                     response.final_value = final_value
                     response.message = (
@@ -646,6 +653,15 @@ class MyCobotStatePublisher(Node):
                 final_angles = [float(value) for value in updated_angles]
                 response.final_degrees = final_angles
 
+                # Recheck after controller I/O so a concurrent stop takes
+                # priority over declaring successful completion.
+                if self.stop_requested.is_set():
+                    response.message = (
+                        "Multi-joint movement stopped through "
+                        "/mycobot/stop"
+                    )
+                    return response
+
                 errors = [
                     abs(final_value - target)
                     for final_value, target in zip(final_angles, targets)
@@ -819,6 +835,12 @@ class MyCobotStatePublisher(Node):
                 ):
                     final_angle = float(updated_angles[joint_id - 1])
                     response.final_degrees = final_angle
+
+                    if self.stop_requested.is_set():
+                        response.message = (
+                            "Movement stopped through /mycobot/stop"
+                        )
+                        return response
 
                     error = abs(final_angle - target)
 
