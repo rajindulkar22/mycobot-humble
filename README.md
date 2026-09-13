@@ -1,26 +1,61 @@
 # mycobot_humble
 
-ROS 2 Humble hardware interface for the **myCobot 280** on **Jetson Nano**.
+A guarded ROS 2 Humble hardware interface for the Elephant Robotics
+myCobot 280 Jetson Nano.
 
-The `state_publisher` node reads joint angles and tool pose from the robot over serial (`/dev/ttyTHS1`) and publishes them to ROS topics. It is **read-only** — no motion commands are sent.
+The project publishes physical robot state and provides safety-gated ROS
+services for:
+
+- Single-joint movement
+- Six-joint pose movement
+- Adaptive-gripper control
+- Robot status
+- Emergency stopping
+
+Physical execution is disabled by default.
+
+## Hardware and environment
+
+- Robot: Elephant Robotics myCobot 280 Jetson Nano
+- End effector: Adaptive gripper
+- Serial port: `/dev/ttyTHS1`
+- Baud rate: `1000000`
+- ROS distribution: ROS 2 Humble
+- Runtime: ARM64 Docker container
+- Python API: `pymycobot`
+- Tested `pymycobot` version: `4.0.4`
+
+## Safety notice
+
+This is an experimental robotics interface.
+
+Before enabling physical movement:
+
+- Secure the robot base.
+- Clear the complete robot workspace.
+- Keep people outside the workspace.
+- Keep the physical power switch accessible.
+- Remove objects from the gripper during testing.
+- Start with low speed and small movements.
+- Perform a dry run before every new physical command.
+
+The `/mycobot/stop` service is a software safety mechanism. It is not a
+replacement for switching off robot power during an unsafe condition.
 
 ## Key paths
 
 | Location | Path |
-|----------|------|
+|---|---|
 | Host project | `~/mycobot_humble` |
-| Workspace (bind-mounted) | `mycobot_ws/` |
-| ROS package | `mycobot_ws/src/mycobot_hardware/` |
-| Container name | `mycobot-humble-jetson` |
-
-## Prerequisites
-
-- Docker and Docker Compose on the Jetson
-- myCobot 280 connected on `/dev/ttyTHS1`
+| ROS workspace | `mycobot_ws/` |
+| Hardware package | `mycobot_ws/src/mycobot_hardware/` |
+| Interface package | `mycobot_ws/src/mycobot_interfaces/` |
+| Container | `mycobot-humble-jetson` |
+| Serial device | `/dev/ttyTHS1` |
 
 ## First-time setup
 
-From the host:
+From the Jetson host:
 
 ```bash
 cd ~/mycobot_humble
@@ -33,125 +68,382 @@ Inside the container:
 
 ```bash
 cd /root/mycobot_ws
-colcon build --symlink-install --packages-select mycobot_hardware
+
+colcon build \
+  --symlink-install \
+  --packages-select mycobot_interfaces mycobot_hardware
+
 source install/setup.bash
 ```
 
-New interactive shells inside the container automatically source ROS Humble and the workspace (configured in the Docker image `.bashrc`).
+New interactive container shells automatically source ROS 2 Humble and
+the workspace.
 
 ## Open the container
 
-From the host (use this every session, including in a new terminal):
-
 ```bash
 cd ~/mycobot_humble
-docker compose up -d          # if not already running
+docker compose up -d
 docker compose exec mycobot bash
 ```
 
-Alternative using the container name:
+Alternative:
 
 ```bash
 docker exec -it mycobot-humble-jetson bash
 ```
 
-You can open **multiple shells** into the same container — useful for running the node in one terminal and inspecting topics in another.
+Multiple shells can be opened in the same container.
 
-## Rebuild after code changes
-
-Inside the container:
+## Rebuild after source changes
 
 ```bash
 cd /root/mycobot_ws
-colcon build --symlink-install --packages-select mycobot_hardware
+
+python3 -m py_compile \
+  src/mycobot_hardware/mycobot_hardware/state_publisher.py
+
+colcon build \
+  --symlink-install \
+  --packages-select mycobot_interfaces mycobot_hardware
+
 source install/setup.bash
 ```
 
-Optional syntax check:
+## Start the hardware node
 
-```bash
-python3 -m py_compile src/mycobot_hardware/mycobot_hardware/state_publisher.py
-```
-
-## Run the state publisher
-
-**Option A — direct run:**
-
-```bash
-ros2 run mycobot_hardware state_publisher
-```
-
-**Option B — launch file** (loads `config/hardware.yaml`):
+The recommended normal launch loads `hardware.yaml` with all physical
+motion gates disabled:
 
 ```bash
 ros2 launch mycobot_hardware state_publisher.launch.py
 ```
 
-**Override parameters** (example):
+Verify the safety gates:
 
 ```bash
-ros2 run mycobot_hardware state_publisher --ros-args -p publish_rate:=10.0
+ros2 param get /mycobot_state_publisher motion_enabled
+ros2 param get /mycobot_state_publisher multi_joint_motion_enabled
+ros2 param get /mycobot_state_publisher gripper_motion_enabled
 ```
 
-Default parameters (`config/hardware.yaml`):
+All three must normally report:
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `port` | `/dev/ttyTHS1` | Serial device |
-| `baud` | `1000000` | Baud rate |
-| `publish_rate` | `5.0` | Poll rate (Hz) |
+```text
+Boolean value is: False
+```
 
-## Inspect topics
+## Published topics
 
-Run in a **second container terminal** while the node is running:
+| Topic | Message type | Description |
+| --- | --- | --- |
+| `/joint_states` | `sensor_msgs/msg/JointState` | Six physical joint positions in radians |
+| `/mycobot/tool_pose_raw` | `std_msgs/msg/Float64MultiArray` | Raw `[x, y, z, rx, ry, rz]` tool pose in millimetres and degrees |
+
+Inspect them from another container terminal:
 
 ```bash
-ros2 node list
-ros2 topic list
 ros2 topic echo /joint_states
 ros2 topic echo /mycobot/tool_pose_raw
 ros2 topic hz /joint_states
 ```
 
-Published topics:
+## Services
 
-| Topic | Message type | Notes |
-|-------|--------------|-------|
-| `/joint_states` | `sensor_msgs/JointState` | Joint positions in radians |
-| `/mycobot/tool_pose_raw` | `std_msgs/Float64MultiArray` | x, y, z, rx, ry, rz in mm/deg |
+| Service | Type | Purpose |
+| --- | --- | --- |
+| `/mycobot/status` | `std_srvs/srv/Trigger` | Read controller, power, error, movement and joint state |
+| `/mycobot/stop` | `std_srvs/srv/Trigger` | Stop the arm and release adaptive-gripper torque |
+| `/mycobot/move_joint` | `mycobot_interfaces/srv/MoveJoint` | Validate or execute one joint movement |
+| `/mycobot/move_joints` | `mycobot_interfaces/srv/MoveJoints` | Validate or execute a six-joint pose |
+| `/mycobot/set_gripper` | `mycobot_interfaces/srv/SetGripper` | Validate or execute adaptive-gripper open/close |
 
-## Serial port locking
-
-Only **one** `state_publisher` may use the serial port at a time. The node acquires a flock lock at `/tmp/mycobot_ttyTHS1.lock`.
-
-- Starting a second instance fails with: `Serial port /dev/ttyTHS1 is already owned by another mycobot_hardware process`
-- Stop the running node with **Ctrl+C** before starting another
-- If a stale process is left behind:
+### Robot status
 
 ```bash
-pkill -f state_publisher
+ros2 service call /mycobot/status \
+  std_srvs/srv/Trigger "{}"
+```
+
+A healthy idle response contains:
+
+```text
+connected=1, power=1, error=0, moving=0
+```
+
+### Emergency stop
+
+```bash
+ros2 service call /mycobot/stop \
+  std_srvs/srv/Trigger "{}"
+```
+
+This:
+
+- Sets the internal stop-request flag.
+- Sends the arm stop command.
+- Sends the adaptive-gripper release command.
+- Takes priority over movement completion checks.
+
+## Dry-run commands
+
+Dry runs perform all validation but do not send physical movement
+commands.
+
+### Single joint
+
+```bash
+ros2 service call /mycobot/move_joint \
+  mycobot_interfaces/srv/MoveJoint \
+  "{joint_id: 1, target_degrees: 3.0, speed: 10, execute: false}"
+```
+
+### Six-joint pose
+
+Use targets close to the freshly measured physical pose:
+
+```bash
+ros2 service call /mycobot/move_joints \
+  mycobot_interfaces/srv/MoveJoints \
+  "{target_degrees: [2.0, -2.0, -1.0, -7.0, -2.0, -142.0], speed: 10, execute: false}"
+```
+
+### Adaptive gripper
+
+Open:
+
+```bash
+ros2 service call /mycobot/set_gripper \
+  mycobot_interfaces/srv/SetGripper \
+  "{state: 0, speed: 10, execute: false}"
+```
+
+Close:
+
+```bash
+ros2 service call /mycobot/set_gripper \
+  mycobot_interfaces/srv/SetGripper \
+  "{state: 1, speed: 10, execute: false}"
+```
+
+Gripper states:
+
+- `0`: open
+- `1`: close
+
+## Physical execution
+
+Physical execution requires two deliberate actions:
+
+1. Start the node with the relevant runtime gate enabled.
+2. Send a service request with `execute: true`.
+
+The configuration file keeps every gate disabled permanently.
+
+### Enable only single-joint execution
+
+```bash
+ros2 run mycobot_hardware state_publisher \
+  --ros-args \
+  --params-file \
+  /root/mycobot_ws/install/mycobot_hardware/share/mycobot_hardware/config/hardware.yaml \
+  -p motion_enabled:=true
+```
+
+### Enable only six-joint execution
+
+```bash
+ros2 run mycobot_hardware state_publisher \
+  --ros-args \
+  --params-file \
+  /root/mycobot_ws/install/mycobot_hardware/share/mycobot_hardware/config/hardware.yaml \
+  -p multi_joint_motion_enabled:=true
+```
+
+### Enable only gripper execution
+
+```bash
+ros2 run mycobot_hardware state_publisher \
+  --ros-args \
+  --params-file \
+  /root/mycobot_ws/install/mycobot_hardware/share/mycobot_hardware/config/hardware.yaml \
+  -p gripper_motion_enabled:=true
+```
+
+Stop the temporarily enabled node with `Ctrl+C` and return to the normal
+launch immediately after physical testing.
+
+## Default parameters
+
+| Parameter | Default | Description |
+| --- | ---: | --- |
+| `port` | `/dev/ttyTHS1` | Robot serial device |
+| `baud` | `1000000` | Serial baud rate |
+| `publish_rate` | `5.0` | State publication rate in Hz |
+| `max_joint_step_degrees` | `5.0` | Maximum movement allowed per joint and request |
+| `max_speed` | `10` | Maximum accepted arm speed |
+| `joint_limit_margin_degrees` | `2.0` | Margin applied inside URDF joint limits |
+| `motion_enabled` | `false` | Single-joint execution gate |
+| `multi_joint_motion_enabled` | `false` | Six-joint execution gate |
+| `motion_timeout_seconds` | `6.0` | Arm movement timeout |
+| `position_tolerance_degrees` | `1.5` | Maximum final joint error |
+| `motion_poll_period_seconds` | `0.2` | Feedback polling interval |
+| `max_gripper_speed` | `20` | Maximum accepted gripper speed |
+| `gripper_motion_enabled` | `false` | Physical gripper execution gate |
+| `gripper_timeout_seconds` | `5.0` | Gripper operation timeout |
+| `gripper_settle_seconds` | `2.0` | Wait used when feedback is initially unavailable |
+| `gripper_open_min_value` | `90` | Minimum value accepted as open |
+| `gripper_closed_max_value` | `10` | Maximum value accepted as closed |
+
+## Safety behavior
+
+Before accepting movement, the node checks:
+
+- Controller connection
+- Robot power
+- Controller error state
+- Existing arm motion
+- Target value validity
+- Per-joint limits
+- Configured joint-limit margin
+- Maximum movement per request
+- Maximum permitted speed
+- Relevant physical execution gate
+
+During physical movement, it provides:
+
+- Asynchronous robot commands
+- A multithreaded ROS executor
+- Serialized hardware access with a mutex
+- Responsive stop handling
+- Controller-error monitoring
+- Automatic timeout and stop
+- Final-position verification
+
+The single-joint, six-joint, and gripper services share a mutually
+exclusive callback group, preventing them from executing simultaneously.
+
+## Adaptive-gripper feedback
+
+Before its first movement, the adaptive gripper may return undocumented
+out-of-range values such as `253`, `254`, or `255`.
+
+The driver treats values outside `0–100` as unavailable feedback, never
+as physical positions. In this case, the response uses:
+
+```text
+start_value=-1
+final_value=-1
+```
+
+After the first successful opening, the tested gripper returned valid
+position feedback:
+
+```text
+Open:   98
+Closed: 1
+```
+
+## Serial-port locking
+
+Only one hardware-node process may own the serial port.
+
+The node acquires:
+
+```text
+/tmp/mycobot_ttyTHS1.lock
+```
+
+Starting a second instance fails instead of allowing competing serial
+commands.
+
+Stop the existing node with `Ctrl+C` before launching another instance.
+
+Check for an existing process:
+
+```bash
+pgrep -af state_publisher
+```
+
+## Phase 1 physical validation
+
+The following tests were completed on the physical myCobot 280:
+
+- Controller connection and power-state checks
+- Joint-angle and tool-pose publication
+- Single J1 movement
+- Single-joint return movement
+- Adaptive-gripper opening
+- Adaptive-gripper closing
+- Six-joint pose movement
+- Six-joint return movement
+- Execution-gate rejection
+- Maximum-step validation
+- Final-position verification
+- Emergency stop during motion
+- Automatic timeout and stop
+- Safe-default restoration after every test
+
+Emergency-stop testing interrupted an intended `8°` J1 movement after
+approximately `1°`, with:
+
+```text
+error=0
+moving=0
+```
+
+The automatic-timeout test stopped a command after `0.1 s`, also with:
+
+```text
+error=0
+moving=0
 ```
 
 ## Troubleshooting
 
-| Problem | Fix |
-|---------|-----|
-| `ros2: command not found` | `source /opt/ros/humble/setup.bash && source install/setup.bash` |
-| Container not running | `docker compose up -d` from `~/mycobot_humble` |
-| Permission errors editing `src/` on host | `sudo chown -R $USER:$USER ~/mycobot_humble/mycobot_ws/src` |
-| Lock / port already in use | Stop other `state_publisher` process (see above) |
-| Rebuild image after Dockerfile changes | `docker compose build --no-cache && docker compose up -d` |
+| Problem | Action |
+| --- | --- |
+| `ros2: command not found` | Source `/opt/ros/humble/setup.bash` and `install/setup.bash` |
+| Container is not running | Run `docker compose up -d` |
+| Serial port is already owned | Stop the existing hardware node |
+| Controller is disconnected | Check power, Atom connection and `/dev/ttyTHS1` |
+| Gripper reports `253–255` | Treat it as unavailable feedback and perform only guarded initialization |
+| Movement is rejected | Inspect the service response and current safety-gate parameters |
+| Source changes are not visible | Rebuild the affected packages and source `install/setup.bash` |
+| Docker image must be rebuilt | Run `docker compose build --no-cache` |
 
 ## Project layout
 
-```
+```text
 mycobot_humble/
 ├── compose.yaml
 ├── Dockerfile
 ├── README.md
 └── mycobot_ws/
-    └── src/mycobot_hardware/
-        ├── config/hardware.yaml
-        ├── launch/state_publisher.launch.py
-        └── mycobot_hardware/state_publisher.py
+    └── src/
+        ├── mycobot_hardware/
+        │   ├── config/
+        │   │   └── hardware.yaml
+        │   ├── launch/
+        │   │   └── state_publisher.launch.py
+        │   ├── mycobot_hardware/
+        │   │   ├── __init__.py
+        │   │   └── state_publisher.py
+        │   ├── package.xml
+        │   ├── setup.cfg
+        │   └── setup.py
+        └── mycobot_interfaces/
+            ├── srv/
+            │   ├── MoveJoint.srv
+            │   ├── MoveJoints.srv
+            │   └── SetGripper.srv
+            ├── CMakeLists.txt
+            └── package.xml
 ```
+
+## Phase status
+
+Phase 1 — guarded ROS 2 hardware control: complete.
+
+Next phase: connect the physical `/joint_states` stream to the myCobot
+280 Jetson Nano adaptive-gripper model in RViz.
