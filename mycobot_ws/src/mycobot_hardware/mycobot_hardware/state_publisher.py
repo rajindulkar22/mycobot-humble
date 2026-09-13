@@ -236,22 +236,37 @@ class MyCobotStatePublisher(Node):
         return response
 
     def handle_stop(self, request, response):
-        """Request cancellation and send the controller stop command."""
+        """Stop arm motion and release adaptive-gripper torque."""
         del request
         self.stop_requested.set()
 
-        try:
-            with self.serial_mutex:
+        failures = []
+
+        with self.serial_mutex:
+            try:
                 self.robot.stop()
+            except Exception as error:
+                failures.append(f"arm stop failed: {error}")
 
-            response.success = True
-            response.message = "Stop command sent to the robot"
-            self.get_logger().warning(response.message)
+            try:
+                self.robot.set_gripper_state(
+                    254,
+                    0,
+                    _type_1=1,
+                )
+            except Exception as error:
+                failures.append(f"gripper release failed: {error}")
 
-        except Exception as error:
+        if failures:
             response.success = False
-            response.message = f"Stop command failed: {error}"
+            response.message = "; ".join(failures)
             self.get_logger().error(response.message)
+        else:
+            response.success = True
+            response.message = (
+                "Arm stop and adaptive-gripper release commands sent"
+            )
+            self.get_logger().warning(response.message)
 
         return response
 
