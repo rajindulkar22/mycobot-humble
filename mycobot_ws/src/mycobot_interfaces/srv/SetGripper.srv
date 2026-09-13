@@ -1,0 +1,8 @@
+uint8 state
+uint8 speed
+bool execute
+---
+bool success
+string message
+int16 start_value
+int16 final_value

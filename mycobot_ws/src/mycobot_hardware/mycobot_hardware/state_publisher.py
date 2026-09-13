@@ -8,7 +8,7 @@ import threading
 import time
 
 import rclpy
-from mycobot_interfaces.srv import MoveJoint
+from mycobot_interfaces.srv import MoveJoint, SetGripper
 from pymycobot import MyCobot280
 from rclpy.callback_groups import (
     MutuallyExclusiveCallbackGroup,
@@ -58,6 +58,8 @@ class MyCobotStatePublisher(Node):
         self.declare_parameter("motion_timeout_seconds", 6.0)
         self.declare_parameter("position_tolerance_degrees", 1.5)
         self.declare_parameter("motion_poll_period_seconds", 0.2)
+        self.declare_parameter("max_gripper_speed", 20)
+        self.declare_parameter("gripper_motion_enabled", False)
 
         port = str(self.get_parameter("port").value)
         baud = int(self.get_parameter("baud").value)
@@ -82,6 +84,8 @@ class MyCobotStatePublisher(Node):
         self.motion_poll_period = float(
             self.get_parameter("motion_poll_period_seconds").value
         )
+        self.max_gripper_speed = int(self.get_parameter("max_gripper_speed").value)
+        self.gripper_motion_enabled = bool(self.get_parameter("gripper_motion_enabled").value)
 
         if publish_rate <= 0.0:
             raise ValueError("publish_rate must be greater than zero")
@@ -154,6 +158,12 @@ class MyCobotStatePublisher(Node):
             self.handle_move_joint,
             callback_group=self.motion_callback_group,
         )
+        self.gripper_service = self.create_service(
+            SetGripper,
+            "mycobot/set_gripper",
+            self.handle_set_gripper,
+            callback_group=self.motion_callback_group,
+        )
 
         self.timer = self.create_timer(
             1.0 / publish_rate,
@@ -219,6 +229,94 @@ class MyCobotStatePublisher(Node):
             self.get_logger().error(response.message)
 
         return response
+
+    def handle_set_gripper(self, request, response):
+        """Validate a gripper command without executing it yet."""
+        response.success = False
+        response.message = ""
+        response.start_value = -1
+        response.final_value = -1
+
+        state = int(request.state)
+        speed = int(request.speed)
+
+        if state not in (0, 1):
+            response.message = "state must be 0 (open) or 1 (close)"
+            return response
+
+        if speed < 1 or speed > self.max_gripper_speed:
+            response.message = (
+                f"speed must be between 1 and {self.max_gripper_speed}"
+            )
+            return response
+
+        try:
+            with self.serial_mutex:
+                connected = self.robot.is_controller_connected()
+                power_state = self.robot.is_power_on()
+                error_state = self.robot.get_error_information()
+                moving = self.robot.is_moving()
+                gripper_value = self.robot.get_gripper_value()
+
+            if connected != 1:
+                response.message = "Robot controller is not connected"
+                return response
+
+            if power_state != 1:
+                response.message = "Robot is not powered on"
+                return response
+
+            if error_state != 0:
+                response.message = (
+                    f"Robot reports error code {error_state}"
+                )
+                return response
+
+            if moving != 0:
+                response.message = "Robot arm is currently moving"
+                return response
+
+            if not isinstance(gripper_value, (int, float)):
+                response.message = (
+                    f"Invalid gripper response: {gripper_value}"
+                )
+                return response
+
+            gripper_value = int(gripper_value)
+
+            if gripper_value < 0 or gripper_value > 100:
+                response.message = (
+                    f"Gripper value {gripper_value} is outside 0–100"
+                )
+                return response
+
+            response.start_value = gripper_value
+            response.final_value = gripper_value
+
+            command_name = "open" if state == 0 else "close"
+
+            if not request.execute:
+                response.success = True
+                response.message = (
+                    f"DRY RUN accepted: {command_name} gripper, "
+                    f"current value {gripper_value}, speed {speed}"
+                )
+                return response
+
+            if not self.gripper_motion_enabled:
+                response.message = (
+                    "Validation passed, but gripper_motion_enabled is false"
+                )
+                return response
+
+            response.message = (
+                "Gripper execution is not implemented yet"
+            )
+            return response
+
+        except Exception as error:
+            response.message = f"Gripper validation failed: {error}"
+            return response
 
     def handle_move_joint(self, request, response):
         """Validate and optionally execute one guarded joint movement."""

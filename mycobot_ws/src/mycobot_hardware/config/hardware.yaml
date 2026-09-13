@@ -12,3 +12,6 @@ mycobot_state_publisher:
     motion_timeout_seconds: 6.0
     position_tolerance_degrees: 1.5
     motion_poll_period_seconds: 0.2
+
+    max_gripper_speed: 20
+    gripper_motion_enabled: false
