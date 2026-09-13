@@ -60,6 +60,10 @@ class MyCobotStatePublisher(Node):
         self.declare_parameter("motion_poll_period_seconds", 0.2)
         self.declare_parameter("max_gripper_speed", 20)
         self.declare_parameter("gripper_motion_enabled", False)
+        self.declare_parameter("gripper_timeout_seconds", 5.0)
+        self.declare_parameter("gripper_settle_seconds", 2.0)
+        self.declare_parameter("gripper_open_min_value", 90)
+        self.declare_parameter("gripper_closed_max_value", 10)
 
         port = str(self.get_parameter("port").value)
         baud = int(self.get_parameter("baud").value)
@@ -86,6 +90,18 @@ class MyCobotStatePublisher(Node):
         )
         self.max_gripper_speed = int(self.get_parameter("max_gripper_speed").value)
         self.gripper_motion_enabled = bool(self.get_parameter("gripper_motion_enabled").value)
+        self.gripper_timeout = float(
+            self.get_parameter("gripper_timeout_seconds").value
+        )
+        self.gripper_settle = float(
+            self.get_parameter("gripper_settle_seconds").value
+        )
+        self.gripper_open_min = int(
+            self.get_parameter("gripper_open_min_value").value
+        )
+        self.gripper_closed_max = int(
+            self.get_parameter("gripper_closed_max_value").value
+        )
 
         if publish_rate <= 0.0:
             raise ValueError("publish_rate must be greater than zero")
@@ -98,6 +114,15 @@ class MyCobotStatePublisher(Node):
 
         if self.motion_poll_period <= 0.0:
             raise ValueError("motion_poll_period_seconds must be positive")
+
+        if self.gripper_settle <= 0.0:
+            raise ValueError("gripper_settle_seconds must be positive")
+
+        if self.gripper_settle >= self.gripper_timeout:
+            raise ValueError(
+                "gripper_settle_seconds must be shorter than "
+                "gripper_timeout_seconds"
+            )
 
         lock_name = f"mycobot_{os.path.basename(port)}.lock"
         lock_path = os.path.join("/tmp", lock_name)
@@ -231,7 +256,7 @@ class MyCobotStatePublisher(Node):
         return response
 
     def handle_set_gripper(self, request, response):
-        """Validate a gripper command without executing it yet."""
+        """Validate and optionally execute a guarded gripper command."""
         response.success = False
         response.message = ""
         response.start_value = -1
@@ -250,13 +275,17 @@ class MyCobotStatePublisher(Node):
             )
             return response
 
+        command_name = "open" if state == 0 else "close"
+
         try:
             with self.serial_mutex:
                 connected = self.robot.is_controller_connected()
                 power_state = self.robot.is_power_on()
                 error_state = self.robot.get_error_information()
-                moving = self.robot.is_moving()
-                gripper_value = self.robot.get_gripper_value()
+                arm_moving = self.robot.is_moving()
+                raw_value = self.robot.get_gripper_value(
+                    gripper_type=1
+                )
 
             if connected != 1:
                 response.message = "Robot controller is not connected"
@@ -272,50 +301,146 @@ class MyCobotStatePublisher(Node):
                 )
                 return response
 
-            if moving != 0:
+            if arm_moving != 0:
                 response.message = "Robot arm is currently moving"
                 return response
 
-            if not isinstance(gripper_value, (int, float)):
+            numeric_feedback = isinstance(raw_value, (int, float))
+
+            if numeric_feedback:
+                raw_value = int(raw_value)
+
+            feedback_available = (
+                numeric_feedback and 0 <= raw_value <= 100
+            )
+            feedback_unavailable = (
+                numeric_feedback and 101 <= raw_value <= 255
+            )
+
+            if not feedback_available and not feedback_unavailable:
                 response.message = (
-                    f"Invalid gripper response: {gripper_value}"
+                    f"Invalid gripper response: {raw_value}"
                 )
                 return response
 
-            gripper_value = int(gripper_value)
-
-            if gripper_value < 0 or gripper_value > 100:
-                response.message = (
-                    f"Gripper value {gripper_value} is outside 0–100"
+            if feedback_available:
+                start_value = raw_value
+                response.start_value = start_value
+                response.final_value = start_value
+                feedback_text = f"current value {start_value}"
+            else:
+                start_value = -1
+                feedback_text = (
+                    f"position feedback unavailable (raw {raw_value})"
                 )
-                return response
-
-            response.start_value = gripper_value
-            response.final_value = gripper_value
-
-            command_name = "open" if state == 0 else "close"
 
             if not request.execute:
                 response.success = True
                 response.message = (
                     f"DRY RUN accepted: {command_name} gripper, "
-                    f"current value {gripper_value}, speed {speed}"
+                    f"{feedback_text}, speed {speed}"
                 )
                 return response
 
             if not self.gripper_motion_enabled:
                 response.message = (
-                    "Validation passed, but gripper_motion_enabled is false"
+                    "Validation passed, but "
+                    "gripper_motion_enabled is false"
                 )
                 return response
 
+            self.stop_requested.clear()
+
+            self.get_logger().warning(
+                f"Executing adaptive gripper {command_name} "
+                f"at speed {speed}"
+            )
+
+            with self.serial_mutex:
+                self.robot.set_gripper_state(
+                    state,
+                    speed,
+                    _type_1=1,
+                )
+
+            command_started = time.monotonic()
+            deadline = command_started + self.gripper_timeout
+            final_value = start_value
+
+            while time.monotonic() < deadline:
+                if self.stop_requested.is_set():
+                    response.final_value = final_value
+                    response.message = (
+                        "Gripper operation interrupted by a stop request"
+                    )
+                    return response
+
+                time.sleep(self.motion_poll_period)
+
+                with self.serial_mutex:
+                    updated_value = self.robot.get_gripper_value(
+                        gripper_type=1
+                    )
+                    gripper_moving = self.robot.is_gripper_moving()
+                    updated_error = self.robot.get_error_information()
+
+                if updated_error != 0:
+                    response.final_value = final_value
+                    response.message = (
+                        f"Controller reported error {updated_error} "
+                        "after the gripper command"
+                    )
+                    return response
+
+                if isinstance(updated_value, (int, float)):
+                    updated_value = int(updated_value)
+
+                    if 0 <= updated_value <= 100:
+                        final_value = updated_value
+                        response.final_value = final_value
+
+                        opened = (
+                            state == 0
+                            and final_value >= self.gripper_open_min
+                        )
+                        closed = (
+                            state == 1
+                            and final_value <= self.gripper_closed_max
+                        )
+
+                        if (opened or closed) and gripper_moving == 0:
+                            response.success = True
+                            response.message = (
+                                f"Gripper {command_name} completed: "
+                                f"{start_value} -> {final_value}"
+                            )
+                            return response
+
+                    elif 101 <= updated_value <= 255:
+                        elapsed = time.monotonic() - command_started
+
+                        if (
+                            elapsed >= self.gripper_settle
+                            and gripper_moving == 0
+                        ):
+                            response.success = True
+                            response.final_value = -1
+                            response.message = (
+                                f"Gripper {command_name} command sent; "
+                                "controller is idle, but position "
+                                "feedback is unavailable—verify physically"
+                            )
+                            return response
+
+            response.final_value = final_value
             response.message = (
-                "Gripper execution is not implemented yet"
+                f"Gripper {command_name} timed out after "
+                f"{self.gripper_timeout:.1f}s"
             )
             return response
 
         except Exception as error:
-            response.message = f"Gripper validation failed: {error}"
+            response.message = f"Gripper command failed: {error}"
             return response
 
     def handle_move_joint(self, request, response):

@@ -15,3 +15,7 @@ mycobot_state_publisher:
 
     max_gripper_speed: 20
     gripper_motion_enabled: false
+    gripper_timeout_seconds: 5.0
+    gripper_settle_seconds: 2.0
+    gripper_open_min_value: 90
+    gripper_closed_max_value: 10
