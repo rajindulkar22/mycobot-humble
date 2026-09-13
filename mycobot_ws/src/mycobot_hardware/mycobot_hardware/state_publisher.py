@@ -1,55 +1,32 @@
 #!/usr/bin/env python3
-"""Read-only ROS 2 state publisher for the myCobot 280.
-
-Polls the arm over serial and publishes joint and tool-pose feedback. This
-node never sends motion commands.
-
-Published topics:
-    joint_states (sensor_msgs/JointState):
-        Six joint positions in radians, named to match the robot URDF.
-    mycobot/tool_pose_raw (std_msgs/Float64MultiArray):
-        Raw Cartesian pose [x, y, z, rx, ry, rz] in mm and degrees from the
-        controller firmware.
-
-Parameters:
-    port (str): Serial device path. Default ``/dev/ttyTHS1``.
-    baud (int): Serial baud rate. Default ``1000000``.
-    publish_rate (float): Poll/publish frequency in Hz. Default ``5.0``.
-
-Run:
-    ros2 run mycobot_hardware state_publisher
-"""
+"""Safe ROS 2 Humble hardware node for the myCobot 280."""
 
 import fcntl
 import math
 import os
+import threading
+import time
 
 import rclpy
-from rclpy.node import Node
-
-# Serial API to the myCobot 280 controller.
-from pymycobot import MyCobot280
-
-# Standard joint feedback for robot_state_publisher, TF, and RViz.
-from sensor_msgs.msg import JointState
-
-# Generic numeric array for project-specific raw tool pose (not a ROS pose type).
-from std_msgs.msg import Float64MultiArray
-
 from mycobot_interfaces.srv import MoveJoint
-from rclpy.executors import ExternalShutdownException
+from pymycobot import MyCobot280
+from rclpy.callback_groups import (
+    MutuallyExclusiveCallbackGroup,
+    ReentrantCallbackGroup,
+)
+from rclpy.executors import (
+    ExternalShutdownException,
+    MultiThreadedExecutor,
+)
+from rclpy.node import Node
+from sensor_msgs.msg import JointState
+from std_msgs.msg import Float64MultiArray
 from std_srvs.srv import Trigger
 
+
 class MyCobotStatePublisher(Node):
-    """Publish physical robot state without commanding motion.
+    """Publish robot state and provide guarded control services."""
 
-    Connects to the arm via pymycobot, reads joint angles and Cartesian
-    coordinates on a timer, and publishes them to ROS topics. Only read
-    APIs are used; no move or write commands are sent.
-    """
-
-    # Names must match the myCobot 280 URDF so robot_state_publisher and
-    # RViz can consume /joint_states without remapping.
     JOINT_NAMES = [
         "joint2_to_joint1",
         "joint3_to_joint2",
@@ -58,6 +35,7 @@ class MyCobotStatePublisher(Node):
         "joint6_to_joint5",
         "joint6output_to_joint6",
     ]
+
     JOINT_LIMITS_DEGREES = {
         1: (-168.0, 168.0),
         2: (-140.0, 140.0),
@@ -68,20 +46,23 @@ class MyCobotStatePublisher(Node):
     }
 
     def __init__(self):
-        """Declare parameters, open the serial connection, and start polling."""
         super().__init__("mycobot_state_publisher")
 
-        # --- ROS parameters ---
         self.declare_parameter("port", "/dev/ttyTHS1")
         self.declare_parameter("baud", 1_000_000)
         self.declare_parameter("publish_rate", 5.0)
         self.declare_parameter("max_joint_step_degrees", 5.0)
         self.declare_parameter("max_speed", 10)
         self.declare_parameter("joint_limit_margin_degrees", 2.0)
+        self.declare_parameter("motion_enabled", False)
+        self.declare_parameter("motion_timeout_seconds", 6.0)
+        self.declare_parameter("position_tolerance_degrees", 1.5)
+        self.declare_parameter("motion_poll_period_seconds", 0.2)
 
         port = str(self.get_parameter("port").value)
         baud = int(self.get_parameter("baud").value)
         publish_rate = float(self.get_parameter("publish_rate").value)
+
         self.max_joint_step = float(
             self.get_parameter("max_joint_step_degrees").value
         )
@@ -89,9 +70,30 @@ class MyCobotStatePublisher(Node):
         self.joint_limit_margin = float(
             self.get_parameter("joint_limit_margin_degrees").value
         )
+        self.motion_enabled = bool(
+            self.get_parameter("motion_enabled").value
+        )
+        self.motion_timeout = float(
+            self.get_parameter("motion_timeout_seconds").value
+        )
+        self.position_tolerance = float(
+            self.get_parameter("position_tolerance_degrees").value
+        )
+        self.motion_poll_period = float(
+            self.get_parameter("motion_poll_period_seconds").value
+        )
 
         if publish_rate <= 0.0:
             raise ValueError("publish_rate must be greater than zero")
+
+        if self.motion_timeout <= 0.0:
+            raise ValueError("motion_timeout_seconds must be positive")
+
+        if self.position_tolerance <= 0.0:
+            raise ValueError("position_tolerance_degrees must be positive")
+
+        if self.motion_poll_period <= 0.0:
+            raise ValueError("motion_poll_period_seconds must be positive")
 
         lock_name = f"mycobot_{os.path.basename(port)}.lock"
         lock_path = os.path.join("/tmp", lock_name)
@@ -113,79 +115,104 @@ class MyCobotStatePublisher(Node):
         self.port_lock.write(str(os.getpid()))
         self.port_lock.flush()
 
+        self.serial_mutex = threading.Lock()
+        self.stop_requested = threading.Event()
+
+        self.io_callback_group = ReentrantCallbackGroup()
+        self.motion_callback_group = MutuallyExclusiveCallbackGroup()
+
         self.get_logger().info(f"Acquired serial lock: {lock_path}")
 
-        # --- Hardware connection ---
         self.robot = MyCobot280(port, baud)
 
-        # --- Publishers ---
-        # Joint positions for the standard ROS robot model pipeline.
         self.joint_publisher = self.create_publisher(
-            JointState, "joint_states", 10
+            JointState,
+            "joint_states",
+            10,
         )
-        # Raw end-effector pose from firmware (mm, degrees); not SI-normalized.
         self.pose_publisher = self.create_publisher(
-            Float64MultiArray, "mycobot/tool_pose_raw", 10
+            Float64MultiArray,
+            "mycobot/tool_pose_raw",
+            10,
         )
 
         self.status_service = self.create_service(
-            Trigger, "mycobot/status", self.handle_status
+            Trigger,
+            "mycobot/status",
+            self.handle_status,
+            callback_group=self.io_callback_group,
         )
         self.stop_service = self.create_service(
-            Trigger, "mycobot/stop", self.handle_stop
+            Trigger,
+            "mycobot/stop",
+            self.handle_stop,
+            callback_group=self.io_callback_group,
         )
         self.move_joint_service = self.create_service(
             MoveJoint,
             "mycobot/move_joint",
             self.handle_move_joint,
+            callback_group=self.motion_callback_group,
         )
 
-        # --- Timer ---
-        # Poll hardware at publish_rate Hz and publish both topics.
         self.timer = self.create_timer(
             1.0 / publish_rate,
             self.publish_state,
+            callback_group=self.io_callback_group,
         )
 
         self.get_logger().info(
             f"Connected on {port} at {baud} baud"
         )
         self.get_logger().info(
-            "Read-only mode: no robot motion commands are used"
+            f"Physical motion enabled: {self.motion_enabled}"
         )
 
     def handle_status(self, request, response):
-        """Return the current robot power and joint status."""
+        """Return controller, power, error and joint status."""
         del request
 
         try:
-            power_state = self.robot.is_power_on()
-            angles = self.robot.get_angles()
+            with self.serial_mutex:
+                connected = self.robot.is_controller_connected()
+                power_state = self.robot.is_power_on()
+                error_state = self.robot.get_error_information()
+                moving = self.robot.is_moving()
+                angles = self.robot.get_angles()
 
             valid_angles = isinstance(angles, list) and len(angles) == 6
-            valid_power = power_state in (0, 1)
 
-            response.success = valid_power and valid_angles
+            response.success = (
+                connected == 1
+                and power_state == 1
+                and error_state == 0
+                and valid_angles
+            )
             response.message = (
-                f"power_on={power_state == 1}, "
+                f"connected={connected}, power={power_state}, "
+                f"error={error_state}, moving={moving}, "
                 f"angles_degrees={angles}"
             )
+
         except Exception as error:
             response.success = False
             response.message = f"Status read failed: {error}"
 
         return response
 
-
     def handle_stop(self, request, response):
-        """Send a stop command while keeping the servos engaged."""
+        """Request cancellation and send the controller stop command."""
         del request
+        self.stop_requested.set()
 
         try:
-            self.robot.stop()
+            with self.serial_mutex:
+                self.robot.stop()
+
             response.success = True
             response.message = "Stop command sent to the robot"
             self.get_logger().warning(response.message)
+
         except Exception as error:
             response.success = False
             response.message = f"Stop command failed: {error}"
@@ -194,7 +221,7 @@ class MyCobotStatePublisher(Node):
         return response
 
     def handle_move_joint(self, request, response):
-        """Validate a joint request without executing motion."""
+        """Validate and optionally execute one guarded joint movement."""
         response.success = False
         response.message = ""
         response.start_degrees = math.nan
@@ -219,19 +246,41 @@ class MyCobotStatePublisher(Node):
             return response
 
         try:
-            power_state = self.robot.is_power_on()
+            with self.serial_mutex:
+                connected = self.robot.is_controller_connected()
+                power_state = self.robot.is_power_on()
+                error_state = self.robot.get_error_information()
+                moving = self.robot.is_moving()
+                angles = self.robot.get_angles()
+
+            if connected != 1:
+                response.message = "Robot controller is not connected"
+                return response
 
             if power_state != 1:
                 response.message = "Robot is not powered on"
                 return response
 
-            angles = self.robot.get_angles()
+            if error_state != 0:
+                response.message = (
+                    f"Robot reports error code {error_state}"
+                )
+                return response
+
+            if moving != 0:
+                response.message = "Robot is already moving"
+                return response
 
             if not isinstance(angles, list) or len(angles) != 6:
                 response.message = f"Invalid joint feedback: {angles}"
                 return response
 
             start = float(angles[joint_id - 1])
+
+            if not math.isfinite(start):
+                response.message = "Current joint angle is invalid"
+                return response
+
             response.start_degrees = start
             response.final_degrees = start
 
@@ -241,7 +290,7 @@ class MyCobotStatePublisher(Node):
 
             if target < safe_lower or target > safe_upper:
                 response.message = (
-                    f"Target {target:.2f}° is outside the safe range "
+                    f"Target {target:.2f}° is outside safe range "
                     f"[{safe_lower:.2f}°, {safe_upper:.2f}°]"
                 )
                 return response
@@ -250,51 +299,100 @@ class MyCobotStatePublisher(Node):
 
             if movement > self.max_joint_step:
                 response.message = (
-                    f"Requested movement {movement:.2f}° exceeds the "
-                    f"{self.max_joint_step:.2f}° limit"
+                    f"Requested movement {movement:.2f}° exceeds "
+                    f"the {self.max_joint_step:.2f}° limit"
                 )
                 return response
 
-            if request.execute:
+            if not request.execute:
+                response.success = True
                 response.message = (
-                    "Validation passed, but physical execution is disabled "
-                    "during the dry-run phase"
+                    f"DRY RUN accepted: J{joint_id}, "
+                    f"{start:.2f}° -> {target:.2f}°, speed {speed}"
                 )
                 return response
 
-            response.success = True
-            response.message = (
-                f"DRY RUN accepted: J{joint_id}, "
+            if not self.motion_enabled:
+                response.message = (
+                    "Validation passed, but motion_enabled is false"
+                )
+                return response
+
+            self.stop_requested.clear()
+
+            self.get_logger().warning(
+                f"Executing J{joint_id}: "
                 f"{start:.2f}° -> {target:.2f}°, speed {speed}"
+            )
+
+            with self.serial_mutex:
+                self.robot.send_angle(
+                    joint_id,
+                    target,
+                    speed,
+                    _async=True,
+                )
+
+            deadline = time.monotonic() + self.motion_timeout
+            final_angle = start
+
+            while time.monotonic() < deadline:
+                if self.stop_requested.is_set():
+                    response.final_degrees = final_angle
+                    response.message = (
+                        "Movement stopped through /mycobot/stop"
+                    )
+                    return response
+
+                time.sleep(self.motion_poll_period)
+
+                with self.serial_mutex:
+                    updated_angles = self.robot.get_angles()
+                    moving = self.robot.is_moving()
+
+                if (
+                    isinstance(updated_angles, list)
+                    and len(updated_angles) == 6
+                ):
+                    final_angle = float(updated_angles[joint_id - 1])
+                    response.final_degrees = final_angle
+
+                    error = abs(final_angle - target)
+
+                    if error <= self.position_tolerance and moving == 0:
+                        response.success = True
+                        response.message = (
+                            f"Movement completed: J{joint_id}, "
+                            f"{start:.2f}° -> {final_angle:.2f}°, "
+                            f"error {error:.2f}°"
+                        )
+                        return response
+
+            with self.serial_mutex:
+                self.robot.stop()
+
+            response.message = (
+                f"Movement timed out after {self.motion_timeout:.1f}s; "
+                f"last angle {final_angle:.2f}°. Stop command sent."
             )
             return response
 
         except Exception as error:
-            response.message = f"Validation failed: {error}"
+            try:
+                with self.serial_mutex:
+                    self.robot.stop()
+            except Exception:
+                pass
+
+            response.message = f"Movement failed: {error}"
             return response
 
-    def destroy_node(self):
-        if hasattr(self, "port_lock") and not self.port_lock.closed:
-            fcntl.flock(self.port_lock.fileno(), fcntl.LOCK_UN)
-            self.port_lock.close()
-
-        return super().destroy_node()
-
     def publish_state(self):
-        """Read joint angles and tool pose from hardware and publish both.
-
-        On each timer tick:
-            1. Read six joint angles (degrees from hardware).
-            2. Validate, convert to radians, publish JointState.
-            3. Read six Cartesian values (mm and degrees from hardware).
-            4. Validate and publish Float64MultiArray.
-
-        Serial or protocol errors are logged; the node keeps running.
-        """
+        """Read and publish joint angles and raw tool pose."""
         try:
-            # --- Joint read path ---
-            # Hardware returns degrees; ROS JointState.position uses radians.
-            angles = self.robot.get_angles()
+            with self.serial_mutex:
+                angles = self.robot.get_angles()
+                coordinates = self.robot.get_coords()
 
             if isinstance(angles, list) and len(angles) == 6:
                 message = JointState()
@@ -309,10 +407,6 @@ class MyCobotStatePublisher(Node):
                     f"Invalid joint response: {angles}"
                 )
 
-            # --- Pose read path ---
-            # get_coords() returns [x, y, z, rx, ry, rz] in mm and degrees.
-            coordinates = self.robot.get_coords()
-
             if isinstance(coordinates, list) and len(coordinates) == 6:
                 pose = Float64MultiArray()
                 pose.data = [float(value) for value in coordinates]
@@ -321,21 +415,33 @@ class MyCobotStatePublisher(Node):
         except Exception as error:
             self.get_logger().error(f"Robot read failed: {error}")
 
+    def destroy_node(self):
+        self.stop_requested.set()
+
+        if hasattr(self, "port_lock") and not self.port_lock.closed:
+            fcntl.flock(self.port_lock.fileno(), fcntl.LOCK_UN)
+            self.port_lock.close()
+
+        return super().destroy_node()
+
 
 def main(args=None):
-    """Initialize the node, spin until interrupted, then shut down cleanly."""
     rclpy.init(args=args)
     node = MyCobotStatePublisher()
+    executor = MultiThreadedExecutor(num_threads=3)
+    executor.add_node(node)
 
     try:
-        rclpy.spin(node)
+        executor.spin()
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        executor.shutdown()
         node.destroy_node()
 
         if rclpy.ok():
             rclpy.shutdown()
+
 
 if __name__ == "__main__":
     main()
