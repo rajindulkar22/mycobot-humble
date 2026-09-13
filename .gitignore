@@ -1,0 +1,12 @@
+mycobot_ws/build/
+mycobot_ws/install/
+mycobot_ws/log/
+
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+
+.ros/
+rosbag2_*/
+data/
+.env

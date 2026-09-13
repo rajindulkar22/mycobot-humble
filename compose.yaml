@@ -1,0 +1,21 @@
+services:
+  mycobot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mycobot-humble:local
+    container_name: mycobot-humble-jetson
+
+    network_mode: host
+    ipc: host
+
+    devices:
+      - /dev/ttyTHS1:/dev/ttyTHS1
+
+    volumes:
+      - ./mycobot_ws:/root/mycobot_ws
+
+    working_dir: /root/mycobot_ws
+    stdin_open: true
+    tty: true
+    command: bash
