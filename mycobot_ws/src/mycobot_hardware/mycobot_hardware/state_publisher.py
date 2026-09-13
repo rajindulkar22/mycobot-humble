@@ -585,15 +585,102 @@ class MyCobotStatePublisher(Node):
                 )
                 return response
 
+            self.stop_requested.clear()
+
+            target_text = ", ".join(
+                f"{value:.2f}" for value in targets
+            )
+
+            self.get_logger().warning(
+                f"Executing six-joint pose [{target_text}] "
+                f"at speed {speed}"
+            )
+
+            with self.serial_mutex:
+                self.robot.send_angles(
+                    targets,
+                    speed,
+                    _async=True,
+                )
+
+            deadline = time.monotonic() + self.motion_timeout
+            final_angles = starts
+
+            while time.monotonic() < deadline:
+                if self.stop_requested.is_set():
+                    response.final_degrees = final_angles
+                    response.message = (
+                        "Multi-joint movement stopped through "
+                        "/mycobot/stop"
+                    )
+                    return response
+
+                time.sleep(self.motion_poll_period)
+
+                with self.serial_mutex:
+                    updated_angles = self.robot.get_angles()
+                    moving = self.robot.is_moving()
+                    updated_error = self.robot.get_error_information()
+
+                if updated_error != 0:
+                    with self.serial_mutex:
+                        self.robot.stop()
+
+                    response.final_degrees = final_angles
+                    response.message = (
+                        f"Controller reported error {updated_error}; "
+                        "stop command sent"
+                    )
+                    return response
+
+                if not isinstance(updated_angles, list) or len(updated_angles) != 6:
+                    with self.serial_mutex:
+                        self.robot.stop()
+
+                    response.message = (
+                        f"Invalid joint feedback during movement: "
+                        f"{updated_angles}; stop command sent"
+                    )
+                    return response
+
+                final_angles = [float(value) for value in updated_angles]
+                response.final_degrees = final_angles
+
+                errors = [
+                    abs(final_value - target)
+                    for final_value, target in zip(final_angles, targets)
+                ]
+                maximum_error = max(errors)
+
+                if (
+                    maximum_error <= self.position_tolerance
+                    and moving == 0
+                ):
+                    response.success = True
+                    response.message = (
+                        "Six-joint movement completed; "
+                        f"maximum final error {maximum_error:.2f}°"
+                    )
+                    return response
+
+            with self.serial_mutex:
+                self.robot.stop()
+
+            response.final_degrees = final_angles
             response.message = (
-                "Multi-joint execution is not implemented yet"
+                f"Multi-joint movement timed out after "
+                f"{self.motion_timeout:.1f}s; stop command sent"
             )
             return response
 
         except Exception as error:
-            response.message = (
-                f"Multi-joint validation failed: {error}"
-            )
+            try:
+                with self.serial_mutex:
+                    self.robot.stop()
+            except Exception:
+                pass
+
+            response.message = f"Multi-joint movement failed: {error}"
             return response
 
     def handle_move_joint(self, request, response):
