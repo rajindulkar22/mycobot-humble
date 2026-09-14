@@ -22,7 +22,7 @@ mycobot_state_publisher:
 
     # Visualization fallback: physically confirmed closed.
     gripper_initial_value: 0
-    gripper_open_angle_radians: -0.5
-    gripper_closed_angle_radians: 0.0
+    gripper_open_angle_radians: 0.15
+    gripper_closed_angle_radians: -0.74
 
     multi_joint_motion_enabled: false

@@ -72,8 +72,8 @@ class MyCobotStatePublisher(Node):
         self.declare_parameter("gripper_open_min_value", 90)
         self.declare_parameter("gripper_closed_max_value", 10)
         self.declare_parameter("gripper_initial_value", 0)
-        self.declare_parameter("gripper_open_angle_radians", -0.5)
-        self.declare_parameter("gripper_closed_angle_radians", 0.0)
+        self.declare_parameter("gripper_open_angle_radians", 0.15)
+        self.declare_parameter("gripper_closed_angle_radians", -0.74)
 
         port = str(self.get_parameter("port").value)
         baud = int(self.get_parameter("baud").value)
