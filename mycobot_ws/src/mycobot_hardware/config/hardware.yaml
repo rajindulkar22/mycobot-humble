@@ -20,4 +20,9 @@ mycobot_state_publisher:
     gripper_open_min_value: 90
     gripper_closed_max_value: 10
 
+    # Visualization fallback: physically confirmed closed.
+    gripper_initial_value: 0
+    gripper_open_angle_radians: -0.5
+    gripper_closed_angle_radians: 0.0
+
     multi_joint_motion_enabled: false

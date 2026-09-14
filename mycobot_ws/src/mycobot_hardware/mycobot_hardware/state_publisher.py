@@ -40,6 +40,8 @@ class MyCobotStatePublisher(Node):
         "joint6output_to_joint6",
     ]
 
+    GRIPPER_JOINT_NAME = "gripper_controller"
+
     JOINT_LIMITS_DEGREES = {
         1: (-168.0, 168.0),
         2: (-140.0, 140.0),
@@ -69,6 +71,9 @@ class MyCobotStatePublisher(Node):
         self.declare_parameter("gripper_settle_seconds", 2.0)
         self.declare_parameter("gripper_open_min_value", 90)
         self.declare_parameter("gripper_closed_max_value", 10)
+        self.declare_parameter("gripper_initial_value", 0)
+        self.declare_parameter("gripper_open_angle_radians", -0.5)
+        self.declare_parameter("gripper_closed_angle_radians", 0.0)
 
         port = str(self.get_parameter("port").value)
         baud = int(self.get_parameter("baud").value)
@@ -110,6 +115,15 @@ class MyCobotStatePublisher(Node):
         self.gripper_closed_max = int(
             self.get_parameter("gripper_closed_max_value").value
         )
+        self.gripper_initial_value = int(
+            self.get_parameter("gripper_initial_value").value
+        )
+        self.gripper_open_angle = float(
+            self.get_parameter("gripper_open_angle_radians").value
+        )
+        self.gripper_closed_angle = float(
+            self.get_parameter("gripper_closed_angle_radians").value
+        )
 
         if publish_rate <= 0.0:
             raise ValueError("publish_rate must be greater than zero")
@@ -130,6 +144,34 @@ class MyCobotStatePublisher(Node):
             raise ValueError(
                 "gripper_settle_seconds must be shorter than "
                 "gripper_timeout_seconds"
+            )
+
+        if (
+            self.gripper_initial_value < -1
+            or self.gripper_initial_value > 100
+        ):
+            raise ValueError(
+                "gripper_initial_value must be -1 or between 0 and 100"
+            )
+
+        if not math.isfinite(self.gripper_open_angle):
+            raise ValueError(
+                "gripper_open_angle_radians must be finite"
+            )
+
+        if not math.isfinite(self.gripper_closed_angle):
+            raise ValueError(
+                "gripper_closed_angle_radians must be finite"
+            )
+
+        if not -0.74 <= self.gripper_open_angle <= 0.15:
+            raise ValueError(
+                "gripper_open_angle_radians is outside the URDF limit"
+            )
+
+        if not -0.74 <= self.gripper_closed_angle <= 0.15:
+            raise ValueError(
+                "gripper_closed_angle_radians is outside the URDF limit"
             )
 
         lock_name = f"mycobot_{os.path.basename(port)}.lock"
@@ -154,6 +196,13 @@ class MyCobotStatePublisher(Node):
 
         self.serial_mutex = threading.Lock()
         self.stop_requested = threading.Event()
+
+        self.gripper_state_mutex = threading.Lock()
+        self.last_gripper_value = (
+            self.gripper_initial_value
+            if self.gripper_initial_value >= 0
+            else None
+        )
 
         self.io_callback_group = ReentrantCallbackGroup()
         self.motion_callback_group = MutuallyExclusiveCallbackGroup()
@@ -221,6 +270,43 @@ class MyCobotStatePublisher(Node):
             f"{self.multi_joint_motion_enabled}"
         )
 
+    def cache_gripper_value(self, raw_value):
+        """Cache valid adaptive-gripper feedback and reject sentinels."""
+        if not isinstance(raw_value, (int, float)):
+            return None
+
+        if not math.isfinite(float(raw_value)):
+            return None
+
+        value = int(raw_value)
+
+        if value < 0 or value > 100:
+            return None
+
+        with self.gripper_state_mutex:
+            self.last_gripper_value = value
+
+        return value
+
+    def get_cached_gripper_value(self):
+        """Return the most recent valid or configured gripper value."""
+        with self.gripper_state_mutex:
+            return self.last_gripper_value
+
+    def clear_cached_gripper_value(self):
+        """Mark gripper position unknown after releasing its torque."""
+        with self.gripper_state_mutex:
+            self.last_gripper_value = None
+
+    def gripper_value_to_radians(self, value):
+        """Map physical 0–100 feedback into the tested URDF range."""
+        fraction = float(value) / 100.0
+        angle_range = (
+            self.gripper_open_angle
+            - self.gripper_closed_angle
+        )
+        return self.gripper_closed_angle + fraction * angle_range
+
     def handle_status(self, request, response):
         """Return controller, power, error and joint status."""
         del request
@@ -274,6 +360,8 @@ class MyCobotStatePublisher(Node):
                 )
             except Exception as error:
                 failures.append(f"gripper release failed: {error}")
+
+        self.clear_cached_gripper_value()
 
         if failures:
             response.success = False
@@ -357,7 +445,7 @@ class MyCobotStatePublisher(Node):
                 return response
 
             if feedback_available:
-                start_value = raw_value
+                start_value = self.cache_gripper_value(raw_value)
                 response.start_value = start_value
                 response.final_value = start_value
                 feedback_text = f"current value {start_value}"
@@ -436,7 +524,9 @@ class MyCobotStatePublisher(Node):
                     updated_value = int(updated_value)
 
                     if 0 <= updated_value <= 100:
-                        final_value = updated_value
+                        final_value = self.cache_gripper_value(
+                            updated_value
+                        )
                         response.final_value = final_value
 
                         opened = (
@@ -463,6 +553,12 @@ class MyCobotStatePublisher(Node):
                             elapsed >= self.gripper_settle
                             and gripper_moving == 0
                         ):
+                            inferred_value = (
+                                100 if state == 0 else 0
+                            )
+                            self.cache_gripper_value(
+                                inferred_value
+                            )
                             response.success = True
                             response.final_value = -1
                             response.message = (
@@ -873,32 +969,69 @@ class MyCobotStatePublisher(Node):
             return response
 
     def publish_state(self):
-        """Read and publish joint angles and raw tool pose."""
+        """Publish arm, gripper and raw tool-pose feedback."""
+        raw_gripper_value = None
+
         try:
             with self.serial_mutex:
                 angles = self.robot.get_angles()
                 coordinates = self.robot.get_coords()
 
+                try:
+                    raw_gripper_value = (
+                        self.robot.get_gripper_value(
+                            gripper_type=1
+                        )
+                    )
+                except Exception:
+                    # Gripper feedback is optional. A failed gripper
+                    # read must not stop arm-state publication.
+                    raw_gripper_value = None
+
+            self.cache_gripper_value(raw_gripper_value)
+
             if isinstance(angles, list) and len(angles) == 6:
-                message = JointState()
-                message.header.stamp = self.get_clock().now().to_msg()
-                message.name = self.JOINT_NAMES
-                message.position = [
+                joint_names = list(self.JOINT_NAMES)
+                joint_positions = [
                     math.radians(angle) for angle in angles
                 ]
+
+                gripper_value = self.get_cached_gripper_value()
+
+                if gripper_value is not None:
+                    joint_names.append(self.GRIPPER_JOINT_NAME)
+                    joint_positions.append(
+                        self.gripper_value_to_radians(
+                            gripper_value
+                        )
+                    )
+
+                message = JointState()
+                message.header.stamp = (
+                    self.get_clock().now().to_msg()
+                )
+                message.name = joint_names
+                message.position = joint_positions
                 self.joint_publisher.publish(message)
             else:
                 self.get_logger().warning(
                     f"Invalid joint response: {angles}"
                 )
 
-            if isinstance(coordinates, list) and len(coordinates) == 6:
+            if (
+                isinstance(coordinates, list)
+                and len(coordinates) == 6
+            ):
                 pose = Float64MultiArray()
-                pose.data = [float(value) for value in coordinates]
+                pose.data = [
+                    float(value) for value in coordinates
+                ]
                 self.pose_publisher.publish(pose)
 
         except Exception as error:
-            self.get_logger().error(f"Robot read failed: {error}")
+            self.get_logger().error(
+                f"Robot read failed: {error}"
+            )
 
     def destroy_node(self):
         self.stop_requested.set()
