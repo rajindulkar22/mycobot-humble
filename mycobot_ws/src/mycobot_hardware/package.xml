@@ -11,6 +11,11 @@
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>mycobot_interfaces</depend>
+  <depend>std_srvs</depend>
+
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>mycobot_description</exec_depend>
 
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
