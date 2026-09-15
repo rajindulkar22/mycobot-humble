@@ -304,5 +304,14 @@
     <mimic joint="gripper_controller" multiplier="1.0" offset="0" />
   </joint>
 
+    <!-- Tool centre point between the adaptive-gripper fingertips. -->
+  <link name="gripper_tcp"/>
+
+  <joint name="gripper_base_to_tcp" type="fixed">
+    <parent link="gripper_base"/>
+    <child link="gripper_tcp"/>
+    <origin xyz="0.0 0.0214 0.0003" rpy="0 0 0"/>
+  </joint>
+
 </robot>
 
