@@ -379,6 +379,20 @@ Physical feedback is mapped linearly into the tested URDF range:
 Phase 2 connects the physical robot feedback to the myCobot 280 Jetson
 Nano adaptive-gripper model in RViz.
 
+<p align="center">
+  <img
+    src="docs/images/physical_rviz_comparison.png"
+    alt="Physical myCobot 280 Jetson Nano beside its RViz digital twin"
+    width="760"
+  />
+</p>
+
+<p align="center"><em>Physical robot (left) and live RViz model (right), driven by the same <code>/joint_states</code> stream.</em></p>
+
+The physical arm on the Jetson publishes live joint angles. The same
+stream drives the URDF model in RViz over ROS 2 DDS, so the digital twin
+tracks the real robot in real time.
+
 The Jetson publishes `/joint_states`, `/tf`, `/tf_static`, and the robot
 model. The joint-state message contains the six arm joints plus
 `gripper_controller`.
