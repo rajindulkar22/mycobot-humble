@@ -1,0 +1,2 @@
+# Planning-only configuration: no trajectory controllers are available.
+moveit_manage_controllers: false
