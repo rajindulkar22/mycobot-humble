@@ -11,8 +11,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-setuptools \
     python3-serial \
     ros-humble-geometry-msgs \
+    ros-humble-image-transport-plugins \
     ros-humble-sensor-msgs \
     ros-humble-std-srvs \
+    ros-humble-usb-cam \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m pip install --no-cache-dir "pymycobot==4.0.4"

@@ -11,6 +11,8 @@ services:
 
     devices:
       - /dev/ttyTHS1:/dev/ttyTHS1
+      - /dev/v4l/by-id/usb-SunplusIT_Inc_HP_320_FHD_Webcam_YJGD325HP20211201V0-video-index0:/dev/overview_camera
+      - /dev/v4l/by-id/usb-Generic_USB_2.0_Camera_20220523-video-index0:/dev/wrist_camera
 
     volumes:
       - ./mycobot_ws:/root/mycobot_ws
