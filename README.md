@@ -17,8 +17,13 @@ Physical execution is disabled by default.
 The physical joint-state stream also drives the myCobot 280 Jetson Nano
 adaptive-gripper model in RViz over ROS 2 DDS.
 
-## Hardware and environment
+## Phase status
+- Phase 1 — Guarded ROS 2 physical hardware control: complete (v0.1.0)
+- Phase 2 — Physical robot model, TF and adaptive-gripper RViz synchronization: complete
+- Phase 3 — Planning-only physical MoveIt with collision checking: complete
+- Phase 4 — Physical camera and object detection: next
 
+## Hardware and environment
 - Robot: Elephant Robotics myCobot 280 Jetson Nano
 - End effector: Adaptive gripper
 - Serial port: `/dev/ttyTHS1`
@@ -101,6 +106,11 @@ docker exec -it mycobot-humble-jetson bash
 ```
 
 Multiple shells can be opened in the same container.
+
+## Phase 1: guarded physical hardware control
+
+Phase 1 provides safety-gated hardware communication, live feedback,
+dry-run validation and guarded command services.
 
 ## Rebuild after source changes
 
@@ -374,8 +384,61 @@ Physical feedback is mapped linearly into the tested URDF range:
 | `0` | Fully closed | `-0.74` rad |
 | `100` | Fully open | `0.15` rad |
 
-## Physical RViz digital twin
+## Serial-port locking
+Only one hardware-node process may own the serial port.
 
+The node acquires:
+
+```text
+/tmp/mycobot_ttyTHS1.lock
+```
+
+Starting a second instance fails instead of allowing competing serial
+commands.
+
+Stop the existing node with `Ctrl+C` before launching another instance.
+
+Check for an existing process:
+
+```bash
+pgrep -af state_publisher
+```
+
+## Phase 1 physical validation
+
+The following tests were completed on the physical myCobot 280:
+
+- Controller connection and power-state checks
+- Joint-angle and tool-pose publication
+- Single J1 movement
+- Single-joint return movement
+- Adaptive-gripper opening
+- Adaptive-gripper closing
+- Six-joint pose movement
+- Six-joint return movement
+- Execution-gate rejection
+- Maximum-step validation
+- Final-position verification
+- Emergency stop during motion
+- Automatic timeout and stop
+- Safe-default restoration after every test
+
+Emergency-stop testing interrupted an intended `8°` J1 movement after
+approximately `1°`, with:
+
+```text
+error=0
+moving=0
+```
+
+The automatic-timeout test stopped a command after `0.1 s`, also with:
+
+```text
+error=0
+moving=0
+```
+
+## Phase 2: physical RViz digital twin
 Phase 2 connects the physical robot feedback to the myCobot 280 Jetson
 Nano adaptive-gripper model in RViz.
 
@@ -453,128 +516,7 @@ Expected nodes include:
 /robot_state_publisher
 ```
 
-## Serial-port locking
-
-Only one hardware-node process may own the serial port.
-
-The node acquires:
-
-```text
-/tmp/mycobot_ttyTHS1.lock
-```
-
-Starting a second instance fails instead of allowing competing serial
-commands.
-
-Stop the existing node with `Ctrl+C` before launching another instance.
-
-Check for an existing process:
-
-```bash
-pgrep -af state_publisher
-```
-
-## Phase 1 physical validation
-
-The following tests were completed on the physical myCobot 280:
-
-- Controller connection and power-state checks
-- Joint-angle and tool-pose publication
-- Single J1 movement
-- Single-joint return movement
-- Adaptive-gripper opening
-- Adaptive-gripper closing
-- Six-joint pose movement
-- Six-joint return movement
-- Execution-gate rejection
-- Maximum-step validation
-- Final-position verification
-- Emergency stop during motion
-- Automatic timeout and stop
-- Safe-default restoration after every test
-
-Emergency-stop testing interrupted an intended `8°` J1 movement after
-approximately `1°`, with:
-
-```text
-error=0
-moving=0
-```
-
-The automatic-timeout test stopped a command after `0.1 s`, also with:
-
-```text
-error=0
-moving=0
-```
-
-## Troubleshooting
-
-| Problem | Action |
-| --- | --- |
-| `ros2: command not found` | Source `/opt/ros/humble/setup.bash` and `install/setup.bash` |
-| Container is not running | Run `docker compose up -d` |
-| Serial port is already owned | Stop the existing hardware node |
-| Controller is disconnected | Check power, Atom connection and `/dev/ttyTHS1` |
-| Gripper reports `253–255` | Treat it as unavailable feedback and perform only guarded initialization |
-| Movement is rejected | Inspect the service response and current safety-gate parameters |
-| Source changes are not visible | Rebuild the affected packages and source `install/setup.bash` |
-| Docker image must be rebuilt | Run `docker compose build --no-cache` |
-| RViz reports No tf data | Confirm that `physical_bringup.launch.py` is running on the Jetson |
-| `/joint_states` has multiple TF consumers | Stop duplicate `robot_state_publisher` processes and restart the ROS daemon |
-| `rviz2` is unavailable in the Jetson container | Run RViz on the laptop; the Jetson container is intended for hardware bringup |
-
-## Project layout
-
-```text
-mycobot_humble/
-├── compose.yaml
-├── Dockerfile
-├── README.md
-└── mycobot_ws/
-    └── src/
-        ├── mycobot_hardware/
-        │   ├── config/
-        │   │   └── hardware.yaml
-        │   ├── launch/
-        │   │   ├── physical_bringup.launch.py
-        │   │   └── state_publisher.launch.py
-        │   ├── mycobot_hardware/
-        │   │   ├── __init__.py
-        │   │   └── state_publisher.py
-        │   ├── package.xml
-        │   ├── setup.cfg
-        │   └── setup.py
-        ├── mycobot_interfaces/
-        │   ├── srv/
-        │   │   ├── MoveJoint.srv
-        │   │   ├── MoveJoints.srv
-        │   │   └── SetGripper.srv
-        │   ├── CMakeLists.txt
-        │   └── package.xml
-        └── mycobot_description/
-            ├── launch/
-            │   └── physical_rviz.launch.py
-            ├── rviz/
-            │   └── physical_mycobot.rviz
-            ├── urdf/
-            │   ├── adaptive_gripper/
-            │   └── mycobot_280_jn/
-            ├── LICENSE
-            ├── package.xml
-            └── setup.py
-```
-
-## Phase status
-
-- Phase 1 — Guarded ROS 2 physical hardware control: complete (v0.1.0)
-- Phase 2 — Physical robot model, TF and adaptive-gripper RViz synchronization: complete
-- Phase 3 — Planning-only physical MoveIt with collision checking: complete
-- Phase 4 — Physical camera and object detection: next
-
-
 ## Phase 3: planning-only physical MoveIt
-
 Phase 3 adds collision-aware MoveIt 2 planning driven by live feedback
 from the physical myCobot. Physical trajectory execution remains
 disabled.
@@ -652,3 +594,63 @@ state and collision-aware plans to multiple valid goals.
 
 The `/recognize_objects` RViz warning is expected until the perception
 phase is added.
+
+## Troubleshooting
+| Problem | Action |
+| --- | --- |
+| `ros2: command not found` | Source `/opt/ros/humble/setup.bash` and `install/setup.bash` |
+| Container is not running | Run `docker compose up -d` |
+| Serial port is already owned | Stop the existing hardware node |
+| Controller is disconnected | Check power, Atom connection and `/dev/ttyTHS1` |
+| Gripper reports `253–255` | Treat it as unavailable feedback and perform only guarded initialization |
+| Movement is rejected | Inspect the service response and current safety-gate parameters |
+| Source changes are not visible | Rebuild the affected packages and source `install/setup.bash` |
+| Docker image must be rebuilt | Run `docker compose build --no-cache` |
+| RViz reports No tf data | Confirm that `physical_bringup.launch.py` is running on the Jetson |
+| `/joint_states` has multiple TF consumers | Stop duplicate `robot_state_publisher` processes and restart the ROS daemon |
+| `rviz2` is unavailable in the Jetson container | Run RViz on the laptop; the Jetson container is intended for hardware bringup |
+
+## Project layout
+```text
+mycobot_humble/
+├── compose.yaml
+├── Dockerfile
+├── README.md
+└── mycobot_ws/
+    └── src/
+        ├── mycobot_hardware/
+        │   ├── config/
+        │   │   └── hardware.yaml
+        │   ├── launch/
+        │   │   ├── physical_bringup.launch.py
+        │   │   └── state_publisher.launch.py
+        │   ├── mycobot_hardware/
+        │   │   ├── __init__.py
+        │   │   └── state_publisher.py
+        │   ├── package.xml
+        │   ├── setup.cfg
+        │   └── setup.py
+        ├── mycobot_interfaces/
+        │   ├── srv/
+        │   │   ├── MoveJoint.srv
+        │   │   ├── MoveJoints.srv
+        │   │   └── SetGripper.srv
+        │   ├── CMakeLists.txt
+        │   └── package.xml
+        ├── mycobot_description/
+            ├── launch/
+            │   └── physical_rviz.launch.py
+            ├── rviz/
+            │   └── physical_mycobot.rviz
+            ├── urdf/
+            │   ├── adaptive_gripper/
+            │   └── mycobot_280_jn/
+            ├── LICENSE
+            ├── package.xml
+            └── setup.py
+        └── mycobot_280jn_physical_moveit_config/
+            ├── config/
+            ├── launch/
+            ├── CMakeLists.txt
+            └── package.xml
+```
