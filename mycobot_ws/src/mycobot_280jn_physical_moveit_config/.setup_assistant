@@ -1,0 +1,10 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: mycobot_description
+    relative_path: urdf/mycobot_280_jn/mycobot_280_jn_adaptive_gripper.urdf
+  srdf:
+    relative_path: config/mycobot_280_jn_adaptive_gripper.srdf
+  package_settings:
+    author_name: Raj Indulkar
+    author_email: rajindulkar7@gmail.com
+    generated_timestamp: 1789498465
