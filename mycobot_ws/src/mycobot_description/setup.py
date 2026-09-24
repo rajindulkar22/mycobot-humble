@@ -1,4 +1,5 @@
 from glob import glob
+from os.path import isfile
 
 from setuptools import setup
 
@@ -21,7 +22,11 @@ setup(
         ),
         (
             "share/" + package_name + "/urdf/mycobot_280_jn",
-            glob("urdf/mycobot_280_jn/*"),
+            [path for path in glob("urdf/mycobot_280_jn/*") if isfile(path)],
+        ),
+        (
+            "share/" + package_name + "/urdf/mycobot_280_jn/collision",
+            glob("urdf/mycobot_280_jn/collision/*"),
         ),
         (
             "share/" + package_name + "/urdf/adaptive_gripper",
