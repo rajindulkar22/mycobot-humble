@@ -569,4 +569,86 @@ mycobot_humble/
 
 - Phase 1 — Guarded ROS 2 physical hardware control: complete (v0.1.0)
 - Phase 2 — Physical robot model, TF and adaptive-gripper RViz synchronization: complete
-- Phase 3 — MoveIt 2 planning and guarded physical execution: next
+- Phase 3 — Planning-only physical MoveIt with collision checking: complete
+- Phase 4 — Physical camera and object detection: next
+
+
+## Phase 3: planning-only physical MoveIt
+
+Phase 3 adds collision-aware MoveIt 2 planning driven by live feedback
+from the physical myCobot. Physical trajectory execution remains
+disabled.
+
+### Architecture
+
+The Jetson Nano Humble container runs `mycobot_state_publisher` and
+`robot_state_publisher`, publishing `/joint_states`, `/tf` and
+`/tf_static`. The development-computer Humble container runs MoveIt
+`move_group`, OMPL and RViz. Both environments communicate through
+ROS 2 DDS.
+
+The physical MoveIt package is:
+
+```text
+mycobot_ws/src/mycobot_280jn_physical_moveit_config
+```
+
+It provides the `arm` group from `joint1` to `gripper_tcp`, KDL
+inverse kinematics, OMPL RRTConnect planning, conservative joint limits,
+simplified collision meshes for all seven arm links and an SRDF
+allowed-collision matrix for mechanically connected links.
+
+### Build and launch
+
+Build on the development computer:
+
+```bash
+cd /root/mycobot_humble/mycobot_ws
+source /opt/ros/humble/setup.bash
+source /root/mycobot_ws/install/setup.bash
+
+colcon build \
+  --base-paths src \
+  --symlink-install \
+  --packages-select \
+    mycobot_description \
+    mycobot_280jn_physical_moveit_config
+
+source install/setup.bash
+```
+
+Start physical feedback on the Jetson:
+
+```bash
+source /root/mycobot_ws/install/setup.bash
+ros2 launch mycobot_hardware state_publisher.launch.py
+```
+
+Start planning-only MoveIt on the development computer:
+
+```bash
+source /opt/ros/humble/setup.bash
+source /root/mycobot_ws/install/setup.bash
+source /root/mycobot_humble/mycobot_ws/install/setup.bash
+
+ros2 launch \
+  mycobot_280jn_physical_moveit_config \
+  physical_planning.launch.py
+```
+
+### Safety and validation
+
+The three physical motion gates and the MoveIt
+`allow_trajectory_execution` and `moveit_manage_controllers`
+parameters must all remain `False`.
+
+This configuration has no `FollowJointTrajectory` action server and no
+`ros2_control` controller manager. A successful RViz plan does not
+authorize physical movement.
+
+Validation confirmed live physical joint feedback, a complete TF chain
+from `joint1` to `gripper_tcp`, zero collision contacts for the live
+state and collision-aware plans to multiple valid goals.
+
+The `/recognize_objects` RViz warning is expected until the perception
+phase is added.
