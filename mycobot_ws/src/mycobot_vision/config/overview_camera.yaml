@@ -1,6 +1,6 @@
 /**:
   ros__parameters:
-    video_device: "/dev/overview_camera"
+    video_device: "/dev/video0"
     framerate: 15.0
     io_method: "mmap"
     frame_id: "overview_camera_optical_frame"
@@ -9,7 +9,7 @@
     image_width: 640
     image_height: 480
     camera_name: "overview_camera"
-    camera_info_url: ""
+    camera_info_url: "package://mycobot_vision/config/overview_camera_info.yaml"
     brightness: -1
     contrast: -1
     saturation: -1
@@ -19,5 +19,3 @@
     white_balance: 4000
     autoexposure: true
     exposure: 100
-    autofocus: false
-    focus: -1
