@@ -1,0 +1,16 @@
+/**:
+  ros__parameters:
+    model_path: "yolo11n.pt"
+
+    input_topic: "/overview_camera/image_rect"
+    annotated_topic: "/overview_camera/yolo/annotated"
+    detections_topic: "/overview_camera/yolo/detections"
+
+    confidence_threshold: 0.40
+    iou_threshold: 0.50
+    image_size: 480
+    device: "cpu"
+
+    # The camera publishes at 15 FPS. Processing every third image
+    # limits CPU inference to at most approximately 5 FPS.
+    process_every_n_frames: 3
