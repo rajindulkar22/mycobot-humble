@@ -13,6 +13,7 @@ install(
 install(
   PROGRAMS
     scripts/table_homography_calibrator.py
+    scripts/table_localizer.py
     scripts/yolo_detector.py
   DESTINATION lib/${PROJECT_NAME}
 )

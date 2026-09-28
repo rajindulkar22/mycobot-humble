@@ -17,6 +17,16 @@ def generate_launch_description():
         "config",
         "yolo_detector.yaml",
     )
+    localizer_config = os.path.join(
+        package_share,
+        "config",
+        "table_localizer.yaml",
+    )
+    homography_config = os.path.join(
+        package_share,
+        "config",
+        "table_homography.yaml",
+    )
 
     rectify_node = Node(
         package="image_proc",
@@ -39,9 +49,23 @@ def generate_launch_description():
         parameters=[detector_config],
     )
 
+    localizer_node = Node(
+        package="mycobot_vision",
+        executable="table_localizer.py",
+        name="table_localizer",
+        output="screen",
+        parameters=[
+            localizer_config,
+            {
+                "homography_file": homography_config,
+            },
+        ],
+    )
+
     return LaunchDescription(
         [
             rectify_node,
             detector_node,
+            localizer_node,
         ]
     )

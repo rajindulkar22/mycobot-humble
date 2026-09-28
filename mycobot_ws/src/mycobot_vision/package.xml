@@ -4,8 +4,8 @@
   <version>0.1.0</version>
 
   <description>
-    Physical dual-camera bringup and object detection for the
-    myCobot 280 Jetson Nano.
+    Physical dual-camera bringup, object detection and tabletop
+    localization for the myCobot 280 Jetson Nano.
   </description>
 
   <maintainer email="rajindulkar7@gmail.com">
@@ -21,7 +21,9 @@
   <exec_depend>image_proc</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>usb_cam</exec_depend>
