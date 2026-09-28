@@ -12,5 +12,18 @@
     device: "cpu"
 
     # The camera publishes at 15 FPS. Processing every third image
-    # limits CPU inference to at most approximately 5 FPS.
+    # limits CPU use while retaining sufficient tabletop updates.
     process_every_n_frames: 3
+
+    # Temporary physical test object. Replace these values with
+    # red_cube, green_cube and blue_cube for the custom model.
+    allowed_classes:
+      - "cup"
+
+    # Safe initial manipulation workspace in the 640x480 image.
+    # Adjust these values after inspecting the yellow ROI overlay.
+    roi_enabled: true
+    roi_x_min: 80
+    roi_y_min: 100
+    roi_x_max: 600
+    roi_y_max: 450
