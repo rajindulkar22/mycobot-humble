@@ -1,0 +1,33 @@
+format_version: 1
+image_topic: "/overview_camera/image_rect"
+reference_type: "ISO_ID_1_card"
+reference_width_m: 0.08560000
+reference_height_m: 0.05398000
+image_width_px: 640
+image_height_px: 480
+image_points_px:
+  - name: "top-left"
+    x: 257.000000
+    y: 252.000000
+  - name: "top-right"
+    x: 346.000000
+    y: 256.000000
+  - name: "bottom-right"
+    x: 344.000000
+    y: 307.000000
+  - name: "bottom-left"
+    x: 250.000000
+    y: 302.000000
+pixel_to_table_homography:
+  rows: 3
+  cols: 3
+  data: [0.001421167328816943, 0.0001989634260343729, -0.4153787868666162, -7.466022981983079e-05, 0.001661190113491242, -0.3994322295360964, 0.0001644689788400752, 0.001679713244906279, 1]
+table_to_pixel_homography:
+  rows: 3
+  cols: 3
+  data: [669.8230467386044, -257.5411811571147, 175.3600363826363, 2.575185528991335, 427.8039488213627, 171.9483625230519, -0.114490685741784, -0.6762304239842738, 0.6823347719168726]
+validation:
+  width_top_m: 0.08560000
+  width_bottom_m: 0.08560000
+  height_right_m: 0.05398000
+  height_left_m: 0.05398000
