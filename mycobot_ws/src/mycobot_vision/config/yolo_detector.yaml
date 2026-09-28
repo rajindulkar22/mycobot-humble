@@ -11,19 +11,29 @@
     image_size: 480
     device: "cpu"
 
-    # The camera publishes at 15 FPS. Processing every third image
-    # limits CPU use while retaining sufficient tabletop updates.
     process_every_n_frames: 3
 
-    # Temporary physical test object. Replace these values with
-    # red_cube, green_cube and blue_cube for the custom model.
+    # Temporary physical test class.
     allowed_classes:
       - "cup"
 
-    # Safe initial manipulation workspace in the 640x480 image.
-    # Adjust these values after inspecting the yellow ROI overlay.
+    # Initial 640x480 manipulation workspace.
     roi_enabled: true
     roi_x_min: 80
     roi_y_min: 100
     roi_x_max: 600
     roi_y_max: 450
+
+    # Publish only stationary detections observed consistently.
+    stability_enabled: true
+    stability_required_frames: 3
+
+    # Maximum distance used to associate detections between frames.
+    stability_max_center_distance_pixels: 40.0
+
+    # Maximum centre variation for a target to be stationary.
+    stability_max_jitter_pixels: 10.0
+
+    # Keep an unmatched track briefly for occasional missed detections.
+    stability_max_missed_frames: 2
+    stability_history_size: 5

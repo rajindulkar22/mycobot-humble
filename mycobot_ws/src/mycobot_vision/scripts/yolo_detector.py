@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 
+from collections import deque
+import math
+
 import cv2
 import rclpy
 
@@ -18,6 +21,137 @@ from vision_msgs.msg import (
     Detection2DArray,
     ObjectHypothesisWithPose,
 )
+
+
+class DetectionCandidate:
+    def __init__(
+        self,
+        class_name,
+        confidence,
+        x_min,
+        y_min,
+        x_max,
+        y_max,
+    ):
+        self.class_name = class_name
+        self.confidence = confidence
+        self.x_min = x_min
+        self.y_min = y_min
+        self.x_max = x_max
+        self.y_max = y_max
+
+    @property
+    def center_x(self):
+        return (self.x_min + self.x_max) / 2.0
+
+    @property
+    def center_y(self):
+        return (self.y_min + self.y_max) / 2.0
+
+    @property
+    def width(self):
+        return max(0.0, self.x_max - self.x_min)
+
+    @property
+    def height(self):
+        return max(0.0, self.y_max - self.y_min)
+
+
+class DetectionTrack:
+    def __init__(self, track_id, history_size):
+        self.track_id = track_id
+        self.history = deque(maxlen=history_size)
+        self.last_candidate = None
+        self.consecutive_hits = 0
+        self.missed_frames = 0
+        self.matched_this_frame = False
+
+    @property
+    def class_name(self):
+        if self.last_candidate is None:
+            return ""
+
+        return self.last_candidate.class_name
+
+    def update(self, candidate):
+        self.last_candidate = candidate
+        self.history.append(candidate)
+        self.consecutive_hits += 1
+        self.missed_frames = 0
+        self.matched_this_frame = True
+
+    def mark_missed(self):
+        self.missed_frames += 1
+        self.consecutive_hits = 0
+        self.matched_this_frame = False
+        self.history.clear()
+
+    def maximum_jitter(self, sample_count):
+        samples = list(self.history)[-sample_count:]
+
+        if not samples:
+            return float("inf")
+
+        mean_x = sum(
+            candidate.center_x for candidate in samples
+        ) / len(samples)
+        mean_y = sum(
+            candidate.center_y for candidate in samples
+        ) / len(samples)
+
+        return max(
+            math.hypot(
+                candidate.center_x - mean_x,
+                candidate.center_y - mean_y,
+            )
+            for candidate in samples
+        )
+
+    def is_stable(
+        self,
+        required_frames,
+        maximum_jitter_pixels,
+    ):
+        if not self.matched_this_frame:
+            return False
+
+        if self.consecutive_hits < required_frames:
+            return False
+
+        if len(self.history) < required_frames:
+            return False
+
+        return (
+            self.maximum_jitter(required_frames)
+            <= maximum_jitter_pixels
+        )
+
+    def averaged_candidate(self, sample_count):
+        samples = list(self.history)[-sample_count:]
+
+        return DetectionCandidate(
+            class_name=self.class_name,
+            confidence=sum(
+                candidate.confidence for candidate in samples
+            )
+            / len(samples),
+            x_min=sum(
+                candidate.x_min for candidate in samples
+            )
+            / len(samples),
+            y_min=sum(
+                candidate.y_min for candidate in samples
+            )
+            / len(samples),
+            x_max=sum(
+                candidate.x_max for candidate in samples
+            )
+            / len(samples),
+            y_max=sum(
+                candidate.y_max for candidate in samples
+            )
+            / len(samples),
+        )
 
 
 class YoloDetector(Node):
@@ -51,6 +185,25 @@ class YoloDetector(Node):
         self.declare_parameter("roi_y_min", 100)
         self.declare_parameter("roi_x_max", 600)
         self.declare_parameter("roi_y_max", 450)
+
+        self.declare_parameter("stability_enabled", True)
+        self.declare_parameter("stability_required_frames", 3)
+        self.declare_parameter(
+            "stability_max_center_distance_pixels",
+            40.0,
+        )
+        self.declare_parameter(
+            "stability_max_jitter_pixels",
+            10.0,
+        )
+        self.declare_parameter(
+            "stability_max_missed_frames",
+            2,
+        )
+        self.declare_parameter(
+            "stability_history_size",
+            5,
+        )
 
         model_path = self.get_parameter("model_path").value
         input_topic = self.get_parameter("input_topic").value
@@ -106,6 +259,50 @@ class YoloDetector(Node):
             self.get_parameter("roi_y_max").value
         )
 
+        self.stability_enabled = bool(
+            self.get_parameter("stability_enabled").value
+        )
+        self.stability_required_frames = max(
+            1,
+            int(
+                self.get_parameter(
+                    "stability_required_frames"
+                ).value
+            ),
+        )
+        self.stability_max_center_distance_pixels = max(
+            0.0,
+            float(
+                self.get_parameter(
+                    "stability_max_center_distance_pixels"
+                ).value
+            ),
+        )
+        self.stability_max_jitter_pixels = max(
+            0.0,
+            float(
+                self.get_parameter(
+                    "stability_max_jitter_pixels"
+                ).value
+            ),
+        )
+        self.stability_max_missed_frames = max(
+            0,
+            int(
+                self.get_parameter(
+                    "stability_max_missed_frames"
+                ).value
+            ),
+        )
+        self.stability_history_size = max(
+            self.stability_required_frames,
+            int(
+                self.get_parameter(
+                    "stability_history_size"
+                ).value
+            ),
+        )
+
         if (
             self.roi_x_max <= self.roi_x_min
             or self.roi_y_max <= self.roi_y_min
@@ -119,6 +316,9 @@ class YoloDetector(Node):
         self.frame_count = 0
         self.processed_count = 0
         self.invalid_roi_warning_sent = False
+
+        self.tracks = []
+        self.next_track_id = 1
 
         self.image_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -162,10 +362,6 @@ class YoloDetector(Node):
                 "Allowed classes: "
                 + ", ".join(sorted(self.allowed_classes))
             )
-        else:
-            self.get_logger().info(
-                "Allowed-class filtering is disabled"
-            )
 
         if self.roi_enabled:
             self.get_logger().info(
@@ -173,8 +369,14 @@ class YoloDetector(Node):
                 f"({self.roi_x_min}, {self.roi_y_min}) to "
                 f"({self.roi_x_max}, {self.roi_y_max})"
             )
-        else:
-            self.get_logger().info("ROI filtering is disabled")
+
+        if self.stability_enabled:
+            self.get_logger().info(
+                "Detection stabilization enabled: "
+                f"{self.stability_required_frames} frames, "
+                f"maximum jitter "
+                f"{self.stability_max_jitter_pixels:.1f} px"
+            )
 
     def resolve_allowed_classes(self):
         if not self.allowed_classes:
@@ -241,25 +443,163 @@ class YoloDetector(Node):
 
         return str(result.names[class_id])
 
-    def draw_detection(
+    def extract_candidates(
         self,
-        image,
-        x_min,
-        y_min,
-        x_max,
-        y_max,
-        class_name,
-        confidence,
+        result,
+        roi_x_min,
+        roi_y_min,
+        roi_x_max,
+        roi_y_max,
     ):
-        colour = (0, 255, 0)
+        candidates = []
 
+        if result.boxes is None:
+            return candidates
+
+        coordinates = result.boxes.xyxy.cpu().numpy()
+        confidences = result.boxes.conf.cpu().numpy()
+        class_ids = result.boxes.cls.cpu().numpy()
+
+        for box, confidence, class_id_value in zip(
+            coordinates,
+            confidences,
+            class_ids,
+        ):
+            x_min, y_min, x_max, y_max = [
+                float(value) for value in box
+            ]
+            class_id = int(class_id_value)
+
+            class_name = self.class_name_from_result(
+                result,
+                class_id,
+            )
+            normalized_class_name = class_name.strip().lower()
+
+            if (
+                self.allowed_classes
+                and normalized_class_name
+                not in self.allowed_classes
+            ):
+                continue
+
+            candidate = DetectionCandidate(
+                class_name=class_name,
+                confidence=float(confidence),
+                x_min=x_min,
+                y_min=y_min,
+                x_max=x_max,
+                y_max=y_max,
+            )
+
+            center_is_inside_roi = (
+                roi_x_min <= candidate.center_x <= roi_x_max
+                and roi_y_min <= candidate.center_y <= roi_y_max
+            )
+
+            if self.roi_enabled and not center_is_inside_roi:
+                continue
+
+            candidates.append(candidate)
+
+        return candidates
+
+    def update_tracks(self, candidates):
+        for track in self.tracks:
+            track.matched_this_frame = False
+
+        assignments = {}
+
+        for candidate_index, candidate in enumerate(candidates):
+            best_track = None
+            best_distance = float("inf")
+
+            for track in self.tracks:
+                if track.matched_this_frame:
+                    continue
+
+                if track.class_name != candidate.class_name:
+                    continue
+
+                if track.last_candidate is None:
+                    continue
+
+                distance = math.hypot(
+                    candidate.center_x
+                    - track.last_candidate.center_x,
+                    candidate.center_y
+                    - track.last_candidate.center_y,
+                )
+
+                if (
+                    distance
+                    <= self.stability_max_center_distance_pixels
+                    and distance < best_distance
+                ):
+                    best_track = track
+                    best_distance = distance
+
+            if best_track is None:
+                best_track = DetectionTrack(
+                    track_id=self.next_track_id,
+                    history_size=self.stability_history_size,
+                )
+                self.next_track_id += 1
+                self.tracks.append(best_track)
+
+            best_track.update(candidate)
+            assignments[candidate_index] = best_track
+
+        for track in self.tracks:
+            if not track.matched_this_frame:
+                track.mark_missed()
+
+        self.tracks = [
+            track
+            for track in self.tracks
+            if (
+                track.missed_frames
+                <= self.stability_max_missed_frames
+            )
+        ]
+
+        return assignments
+
+    def create_detection_message(
+        self,
+        candidate,
+        header,
+        track_id=None,
+    ):
+        detection = Detection2D()
+        detection.header = header
+
+        detection.bbox.center.position.x = candidate.center_x
+        detection.bbox.center.position.y = candidate.center_y
+        detection.bbox.center.theta = 0.0
+        detection.bbox.size_x = candidate.width
+        detection.bbox.size_y = candidate.height
+
+        hypothesis = ObjectHypothesisWithPose()
+        hypothesis.hypothesis.class_id = candidate.class_name
+        hypothesis.hypothesis.score = candidate.confidence
+
+        detection.results.append(hypothesis)
+
+        if track_id is not None:
+            detection.id = f"track_{track_id}"
+
+        return detection
+
+    @staticmethod
+    def draw_box(image, candidate, label, colour):
         top_left = (
-            int(round(x_min)),
-            int(round(y_min)),
+            int(round(candidate.x_min)),
+            int(round(candidate.y_min)),
         )
         bottom_right = (
-            int(round(x_max)),
-            int(round(y_max)),
+            int(round(candidate.x_max)),
+            int(round(candidate.y_max)),
         )
 
         cv2.rectangle(
@@ -270,9 +610,8 @@ class YoloDetector(Node):
             2,
         )
 
-        label = f"{class_name} {confidence:.2f}"
         font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.55
+        font_scale = 0.50
         thickness = 2
 
         text_size, baseline = cv2.getTextSize(
@@ -341,6 +680,14 @@ class YoloDetector(Node):
                 verbose=False,
             )[0]
 
+            candidates = self.extract_candidates(
+                result,
+                roi_x_min,
+                roi_y_min,
+                roi_x_max,
+                roi_y_max,
+            )
+
             detections_message = Detection2DArray()
             detections_message.header = image_message.header
 
@@ -354,7 +701,6 @@ class YoloDetector(Node):
                     (0, 255, 255),
                     2,
                 )
-
                 cv2.putText(
                     annotated_image,
                     "Manipulation ROI",
@@ -366,84 +712,93 @@ class YoloDetector(Node):
                     cv2.LINE_AA,
                 )
 
-            if result.boxes is not None:
-                coordinates = result.boxes.xyxy.cpu().numpy()
-                confidences = result.boxes.conf.cpu().numpy()
-                class_ids = result.boxes.cls.cpu().numpy()
+            if self.stability_enabled:
+                assignments = self.update_tracks(candidates)
 
-                for box, confidence, class_id_value in zip(
-                    coordinates,
-                    confidences,
-                    class_ids,
+                for candidate_index, candidate in enumerate(
+                    candidates
                 ):
-                    x_min, y_min, x_max, y_max = [
-                        float(value) for value in box
-                    ]
-                    class_id = int(class_id_value)
+                    track = assignments[candidate_index]
 
-                    class_name = self.class_name_from_result(
-                        result,
-                        class_id,
-                    )
-                    normalized_class_name = (
-                        class_name.strip().lower()
-                    )
-
-                    if (
-                        self.allowed_classes
-                        and normalized_class_name
-                        not in self.allowed_classes
+                    if track.is_stable(
+                        self.stability_required_frames,
+                        self.stability_max_jitter_pixels,
                     ):
-                        continue
+                        averaged_candidate = (
+                            track.averaged_candidate(
+                                self.stability_required_frames
+                            )
+                        )
 
-                    center_x = (x_min + x_max) / 2.0
-                    center_y = (y_min + y_max) / 2.0
+                        detection = (
+                            self.create_detection_message(
+                                averaged_candidate,
+                                image_message.header,
+                                track.track_id,
+                            )
+                        )
+                        detections_message.detections.append(
+                            detection
+                        )
 
-                    center_is_inside_roi = (
-                        roi_x_min <= center_x <= roi_x_max
-                        and roi_y_min <= center_y <= roi_y_max
-                    )
+                        label = (
+                            f"{averaged_candidate.class_name} "
+                            f"{averaged_candidate.confidence:.2f} "
+                            "STABLE"
+                        )
+                        self.draw_box(
+                            annotated_image,
+                            averaged_candidate,
+                            label,
+                            (0, 255, 0),
+                        )
 
-                    if (
-                        self.roi_enabled
-                        and not center_is_inside_roi
+                    elif (
+                        track.consecutive_hits
+                        >= self.stability_required_frames
                     ):
-                        continue
+                        label = (
+                            f"{candidate.class_name} MOVING"
+                        )
+                        self.draw_box(
+                            annotated_image,
+                            candidate,
+                            label,
+                            (0, 165, 255),
+                        )
 
-                    detection = Detection2D()
-                    detection.header = image_message.header
+                    else:
+                        label = (
+                            f"{candidate.class_name} "
+                            f"{track.consecutive_hits}/"
+                            f"{self.stability_required_frames}"
+                        )
+                        self.draw_box(
+                            annotated_image,
+                            candidate,
+                            label,
+                            (0, 165, 255),
+                        )
 
-                    detection.bbox.center.position.x = center_x
-                    detection.bbox.center.position.y = center_y
-                    detection.bbox.center.theta = 0.0
-                    detection.bbox.size_x = max(
-                        0.0,
-                        x_max - x_min,
+            else:
+                for candidate in candidates:
+                    detection = self.create_detection_message(
+                        candidate,
+                        image_message.header,
                     )
-                    detection.bbox.size_y = max(
-                        0.0,
-                        y_max - y_min,
-                    )
-
-                    hypothesis = ObjectHypothesisWithPose()
-                    hypothesis.hypothesis.class_id = class_name
-                    hypothesis.hypothesis.score = float(
-                        confidence
-                    )
-
-                    detection.results.append(hypothesis)
                     detections_message.detections.append(
                         detection
                     )
 
-                    self.draw_detection(
+                    label = (
+                        f"{candidate.class_name} "
+                        f"{candidate.confidence:.2f}"
+                    )
+                    self.draw_box(
                         annotated_image,
-                        x_min,
-                        y_min,
-                        x_max,
-                        y_max,
-                        class_name,
-                        float(confidence),
+                        candidate,
+                        label,
+                        (0, 255, 0),
                     )
 
             self.detections_publisher.publish(
@@ -466,7 +821,7 @@ class YoloDetector(Node):
                 self.get_logger().info(
                     "Processed "
                     f"{self.processed_count} frames; "
-                    "accepted detections: "
+                    "stable detections: "
                     f"{len(detections_message.detections)}"
                 )
 
