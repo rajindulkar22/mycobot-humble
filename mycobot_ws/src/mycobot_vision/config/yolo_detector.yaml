@@ -1,39 +1,26 @@
 /**:
   ros__parameters:
-    model_path: "yolo11n.pt"
-
-    input_topic: "/overview_camera/image_rect"
-    annotated_topic: "/overview_camera/yolo/annotated"
-    detections_topic: "/overview_camera/yolo/detections"
-
-    confidence_threshold: 0.40
-    iou_threshold: 0.50
-    image_size: 480
-    device: "cpu"
-
+    model_path: /root/mycobot_humble/models/bottle_caps_v1.pt
+    input_topic: /overview_camera/image_rect
+    annotated_topic: /overview_camera/yolo/annotated
+    detections_topic: /overview_camera/yolo/detections
+    confidence_threshold: 0.4
+    iou_threshold: 0.5
+    image_size: 640
+    device: cpu
     process_every_n_frames: 3
-
-    # Temporary physical test class.
     allowed_classes:
-      - "cup"
-
-    # Initial 640x480 manipulation workspace.
+    - red_cap
+    - black_cap
+    - white_cap
     roi_enabled: true
     roi_x_min: 80
     roi_y_min: 100
     roi_x_max: 600
     roi_y_max: 450
-
-    # Publish only stationary detections observed consistently.
     stability_enabled: true
     stability_required_frames: 3
-
-    # Maximum distance used to associate detections between frames.
     stability_max_center_distance_pixels: 40.0
-
-    # Maximum centre variation for a target to be stationary.
     stability_max_jitter_pixels: 10.0
-
-    # Keep an unmatched track briefly for occasional missed detections.
     stability_max_missed_frames: 2
     stability_history_size: 5

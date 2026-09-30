@@ -30,7 +30,13 @@ setup(
         ),
         (
             "share/" + package_name + "/urdf/adaptive_gripper",
-            glob("urdf/adaptive_gripper/*"),
+            [path for path in glob("urdf/adaptive_gripper/*")
+             if isfile(path)],
+        ),
+        (
+            "share/" + package_name + "/urdf/adaptive_gripper/collision",
+            [path for path in glob("urdf/adaptive_gripper/collision/*")
+             if isfile(path)],
         ),
 
                 (

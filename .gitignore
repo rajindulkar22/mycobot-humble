@@ -9,7 +9,12 @@ mycobot_ws/log/
 .ros/
 rosbag2_*/
 data/
+# Dataset capture
+datasets/
 .env
 
 # Ultralytics model weights are downloaded locally.
 *.pt
+
+# Local editing backups
+*.before_*

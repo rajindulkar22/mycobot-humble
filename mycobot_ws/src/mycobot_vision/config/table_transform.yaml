@@ -1,0 +1,14 @@
+# Provisional ruler-based alignment, visually checked in RViz.
+# Translation is in metres; quaternion order is x, y, z, w.
+# Further physical validation is required before grasping.
+parent_frame: joint1
+child_frame: table_frame
+translation:
+  x: 0.235248
+  y: -0.147825
+  z: -0.033379
+rotation:
+  x: 0.7071067812
+  y: -0.7071067812
+  z: 0.0
+  w: 0.0
