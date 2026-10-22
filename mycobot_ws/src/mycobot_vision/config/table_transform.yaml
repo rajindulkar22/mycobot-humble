@@ -1,4 +1,3 @@
-# Provisional joint1 to table_frame alignment. Not tool_pose_raw.
 # Provisional ruler-based alignment, visually checked in RViz.
 # Translation is in metres; quaternion order is x, y, z, w.
 # Further physical validation is required before grasping.

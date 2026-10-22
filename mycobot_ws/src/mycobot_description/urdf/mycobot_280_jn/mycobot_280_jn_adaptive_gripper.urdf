@@ -196,7 +196,7 @@
     </visual>
     <collision>
       <geometry>
-       <mesh filename="package://mycobot_description/urdf/adaptive_gripper/gripper_base.dae"/>
+       <mesh filename="package://mycobot_description/urdf/adaptive_gripper/collision/gripper_base_collision.stl"/>
       </geometry>
     <origin xyz = "0.0 0 -0.012 " rpy = " 0 0 0"/>
     </collision>

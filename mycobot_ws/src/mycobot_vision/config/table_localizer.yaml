@@ -1,0 +1,5 @@
+/**:
+  ros__parameters:
+    input_topic: "/overview_camera/yolo/detections"
+    output_topic: "/overview_camera/table_detections"
+    table_frame: "table_frame"

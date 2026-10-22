@@ -1,5 +1,3 @@
-# Pixels on /overview_camera/image_rect, 640x480, to table_frame metres.
-# This is not a /mycobot/tool_pose_raw measurement.
 format_version: 1
 image_topic: "/overview_camera/image_rect"
 reference_type: "ISO_ID_1_card"
