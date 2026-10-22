@@ -1,0 +1,13 @@
+float64 x
+float64 y
+float64 z
+float64 rx
+float64 ry
+float64 rz
+uint8 speed
+bool execute
+---
+bool success
+string message
+float64[6] start_coords
+float64[6] final_coords

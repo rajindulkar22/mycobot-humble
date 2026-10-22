@@ -1,0 +1,20 @@
+/**:
+  ros__parameters:
+    # Copied from bottle_caps_v1.pt. This node reads target_class.
+    model_path: "/root/mycobot_ws/src/mycobot_vision/models/best.pt"
+    # Empty publishes red_cap, black_cap, and white_cap. The pick
+    # page chooses one color when a button is pressed.
+    target_class: ""
+
+    input_topic: "/overview_camera/image_rect"
+    annotated_topic: "/overview_camera/yolo/annotated"
+    detections_topic: "/overview_camera/yolo/detections"
+
+    confidence_threshold: 0.30
+    iou_threshold: 0.50
+    image_size: 640
+    device: "cpu"
+
+    # The camera publishes at 15 FPS. Processing every third image
+    # limits CPU inference to at most approximately 5 FPS.
+    process_every_n_frames: 3

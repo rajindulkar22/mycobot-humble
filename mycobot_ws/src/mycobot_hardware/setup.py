@@ -26,6 +26,13 @@ setup(
             os.path.join("share", package_name, "config"),
             glob("config/*.yaml"),
         ),
+        (
+            os.path.join("share", package_name),
+            [
+                "mycobot_hardware/demo_page.html",
+                "mycobot_hardware/joint_plot_page.html",
+            ],
+        ),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -37,6 +44,8 @@ setup(
     entry_points={
         "console_scripts": [
             "state_publisher = mycobot_hardware.state_publisher:main",
+            "demo_ui = mycobot_hardware.demo_ui:main",
+            "joint_plot = mycobot_hardware.joint_plot:main",
         ],
     },
 )

@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>myCobot joint demo</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1c1915;
+      --muted: #5c564c;
+      --line: #d9d2c5;
+      --paper: #f6f3ec;
+      --card: #fffdf8;
+      --accent: #1f4b3a;
+      --accent-ink: #f4f7f4;
+      --stop: #8f1d1d;
+      --stop-ink: #fff8f6;
+      --ok: #1f4b3a;
+      --bad: #8f1d1d;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+    }
+
+    main {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 24px 20px 40px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 1.8rem;
+      font-weight: 650;
+    }
+
+    h2 {
+      margin: 0 0 8px;
+      font-size: 1.15rem;
+    }
+
+    p { margin: 0; line-height: 1.45; }
+
+    .notice, .card, .status {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+    }
+
+    .notice {
+      padding: 14px 16px;
+      margin: 18px 0;
+      color: var(--muted);
+    }
+
+    .card { padding: 16px; margin-bottom: 16px; }
+
+    .lede { color: var(--muted); margin-bottom: 14px; }
+
+    .angles, .joint-row, .all-grid {
+      display: grid;
+      gap: 10px;
+    }
+
+    .angles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+    .angle, .joint-row, .step-field {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+    }
+
+    .angle { padding: 10px 12px; }
+
+    .angle span, .name, label {
+      display: block;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+
+    .angle strong, .readout {
+      font-variant-numeric: tabular-nums;
+      font-size: 1.35rem;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px 24px;
+      align-items: end;
+      margin-bottom: 14px;
+    }
+
+    input[type="number"], input[type="range"] {
+      accent-color: var(--accent);
+    }
+
+    input[type="number"] {
+      width: 88px;
+      font: inherit;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    .joint-row {
+      grid-template-columns: 72px 1fr auto auto;
+      align-items: center;
+      padding: 10px;
+      margin-bottom: 8px;
+    }
+
+    .readout { text-align: right; }
+
+    button {
+      font: inherit;
+      border: 0;
+      border-radius: 10px;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      cursor: wait;
+      opacity: 0.55;
+    }
+
+    .jog, .move-all {
+      background: var(--accent);
+      color: var(--accent-ink);
+    }
+
+    .jog {
+      min-width: 64px;
+      min-height: 44px;
+      font-size: 1.2rem;
+    }
+
+    .move-all {
+      min-height: 46px;
+      padding: 0 18px;
+    }
+
+    .all-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+    .step-field { padding: 10px 12px; }
+
+    .all-actions {
+      display: flex;
+      justify-content: flex-start;
+      margin-top: 14px;
+    }
+
+    .stop-bar {
+      margin-top: 12px;
+    }
+
+    .stop {
+      width: 100%;
+      min-height: 64px;
+      background: var(--stop);
+      color: var(--stop-ink);
+      font-size: 1.3rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+
+    .status {
+      padding: 12px 14px;
+      margin-bottom: 12px;
+      min-height: 48px;
+    }
+
+    .status.ok { color: var(--ok); }
+    .status.bad { color: var(--bad); }
+
+    @media (max-width: 700px) {
+      .angles, .all-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .joint-row { grid-template-columns: 72px 1fr auto; }
+      .joint-row .readout { grid-column: 2; text-align: left; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>myCobot joint demo</h1>
+    <p class="lede">Move one joint, or move all six in the same command.</p>
+    <p class="notice">
+      Supervised demo. Each press moves a joint by at most 5 degrees,
+      at speed 10 or less. Stop sends /mycobot/stop. Keep the power
+      switch within reach and the workspace clear.
+    </p>
+
+    <section class="card">
+      <h2>Live joints</h2>
+      <p class="lede" id="link-status">Waiting for joint feedback.</p>
+      <div class="angles" id="angles"></div>
+      <div class="all-actions">
+        <button class="move-all" id="zero" type="button" disabled>Zero position</button>
+      </div>
+      <p class="lede">Moves J1 through J6 to 0°.</p>
+    </section>
+
+    <section class="card">
+      <h2>One joint</h2>
+      <p class="lede">Moves only the joint you press, from its current angle.</p>
+      <div class="controls">
+        <label>
+          Step (degrees)
+          <input id="single-step" type="number" min="1" max="5" step="1" value="2">
+        </label>
+        <label>
+          Speed
+          <input id="speed" type="range" min="1" max="10" step="1" value="5">
+          <strong id="speed-value">5</strong>
+        </label>
+      </div>
+      <div id="single-joints"></div>
+    </section>
+
+    <section class="card">
+      <h2>All joints together</h2>
+      <p class="lede">
+        Enter a change in degrees for each joint. Zero keeps that joint
+        where it is. One command moves the others together.
+      </p>
+      <div class="all-grid" id="all-joints"></div>
+      <div class="all-actions">
+        <button class="move-all" id="move-all" type="button" disabled>Move all</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Initial position</h2>
+      <p class="lede">
+        Moves all six joints back to 0°. Press Stop if you need to halt it.
+      </p>
+      <button class="move-all" id="initial" type="button" disabled>Initial position</button>
+    </section>
+
+    <section class="card">
+      <h2>Dance</h2>
+      <p class="lede">
+        Dance reaches the same pose in three directions, with J1 at
+        −60°, 0°, and +45°. It closes the gripper at each pose, returns
+        to 0°, opens the gripper, and keeps repeating until you press Stop.
+      </p>
+      <button class="move-all" id="dance" type="button" disabled>Dance</button>
+    </section>
+
+    <p class="status" id="status">Ready.</p>
+    <div class="stop-bar">
+      <button class="stop" id="stop" type="button">Stop</button>
+    </div>
+  </main>
+  <script>
+    const joints = [
+      ["J1", "joint2_to_joint1"],
+      ["J2", "joint3_to_joint2"],
+      ["J3", "joint4_to_joint3"],
+      ["J4", "joint5_to_joint4"],
+      ["J5", "joint6_to_joint5"],
+      ["J6", "joint6output_to_joint6"]
+    ];
+
+    const angles = document.getElementById("angles");
+    const singleJoints = document.getElementById("single-joints");
+    const allJoints = document.getElementById("all-joints");
+    const status = document.getElementById("status");
+    const linkStatus = document.getElementById("link-status");
+    const speed = document.getElementById("speed");
+    const speedValue = document.getElementById("speed-value");
+    const singleStep = document.getElementById("single-step");
+    const moveButtons = [];
+
+    let busy = false;
+    let feedbackReady = false;
+    let servicesReady = false;
+
+    joints.forEach(function (joint, index) {
+      const angle = document.createElement("div");
+      angle.className = "angle";
+      angle.innerHTML = "<span></span><strong>--°</strong>";
+      angle.querySelector("span").textContent = joint[0] + "  " + joint[1];
+      angles.appendChild(angle);
+
+      const row = document.createElement("div");
+      row.className = "joint-row";
+      const name = document.createElement("div");
+      name.className = "name";
+      name.textContent = joint[0];
+      const readout = document.createElement("div");
+      readout.className = "readout";
+      readout.textContent = "--°";
+      const minus = jogButton("−", index + 1, -1);
+      const plus = jogButton("+", index + 1, 1);
+      row.append(name, readout, minus, plus);
+      singleJoints.appendChild(row);
+
+      const field = document.createElement("label");
+      field.className = "step-field";
+      field.textContent = joint[0] + " step";
+      const input = document.createElement("input");
+      input.type = "number";
+      input.min = "-5";
+      input.max = "5";
+      input.step = "1";
+      input.value = "0";
+      input.dataset.joint = String(index);
+      field.appendChild(input);
+      allJoints.appendChild(field);
+    });
+
+    function jogButton(label, jointId, direction) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "jog";
+      button.textContent = label;
+      button.disabled = true;
+      button.addEventListener("click", function () {
+        let step;
+        try {
+          step = selectedStep() * direction;
+        } catch (error) {
+          setStatus(error.message, false);
+          return;
+        }
+        sendCommand("/api/move_joint", {
+          joint_id: jointId,
+          step_degrees: step,
+          speed: selectedSpeed()
+        });
+      });
+      moveButtons.push(button);
+      return button;
+    }
+
+    function selectedSpeed() {
+      return Number(speed.value);
+    }
+
+    function selectedStep() {
+      const step = Number(singleStep.value);
+      if (!Number.isFinite(step) || step < 1 || step > 5) {
+        throw new Error("Step must be from 1 to 5 degrees");
+      }
+      return step;
+    }
+
+    function setStatus(message, ok) {
+      status.textContent = message;
+      status.className = ok ? "status ok" : "status bad";
+    }
+
+    function setBusy(value) {
+      busy = value;
+      const locked = value || !feedbackReady || !servicesReady;
+      moveButtons.forEach(function (button) {
+        button.disabled = locked;
+      });
+      document.getElementById("move-all").disabled = locked;
+      document.getElementById("dance").disabled = locked;
+      document.getElementById("initial").disabled = locked;
+      document.getElementById("zero").disabled = locked;
+    }
+
+    async function sendCommand(path, payload, waitingMessage) {
+      if (busy) {
+        return;
+      }
+      setBusy(true);
+      setStatus(waitingMessage || "Sending command…", true);
+      try {
+        const response = await fetch(path, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        const body = await response.json();
+        setStatus(body.message || "No response message", Boolean(body.success));
+      } catch (error) {
+        setStatus(error.message || "Command failed", false);
+      } finally {
+        setBusy(false);
+        refreshState();
+      }
+    }
+
+    document.getElementById("move-all").addEventListener("click", function () {
+      let steps;
+      try {
+        steps = Array.from(allJoints.querySelectorAll("input")).map(function (input) {
+          const step = Number(input.value);
+          if (!Number.isFinite(step) || step < -5 || step > 5) {
+            throw new Error("Each all-joint step must be from -5 to 5 degrees");
+          }
+          return step;
+        });
+      } catch (error) {
+        setStatus(error.message, false);
+        return;
+      }
+      if (steps.every(function (step) { return step === 0; })) {
+        setStatus("Enter a non-zero step for at least one joint", false);
+        return;
+      }
+      sendCommand("/api/move_joints", {
+        steps: steps,
+        speed: selectedSpeed()
+      });
+    });
+
+    document.getElementById("dance").addEventListener("click", function () {
+      sendCommand("/api/dance", {}, "Dancing… press Stop to end.");
+    });
+
+    document.getElementById("initial").addEventListener("click", function () {
+      sendCommand("/api/initial", {}, "Moving to the initial position…");
+    });
+
+    document.getElementById("zero").addEventListener("click", function () {
+      sendCommand("/api/initial", {}, "Moving all joints to 0°…");
+    });
+
+    document.getElementById("stop").addEventListener("click", async function () {
+      setStatus("Stopping…", true);
+      try {
+        const response = await fetch("/api/stop", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}"
+        });
+        const body = await response.json();
+        setStatus(body.message || "Stop sent", Boolean(body.success));
+      } catch (error) {
+        setStatus(error.message || "Stop failed", false);
+      }
+    });
+
+    speed.addEventListener("input", function () {
+      speedValue.textContent = speed.value;
+    });
+
+    async function refreshState() {
+      try {
+        const response = await fetch("/api/state");
+        const body = await response.json();
+        feedbackReady = Boolean(body.feedback_ready);
+        servicesReady = Boolean(body.services_ready);
+        const values = body.angles_degrees || [];
+        const readouts = singleJoints.querySelectorAll(".readout");
+        const angleValues = angles.querySelectorAll("strong");
+        values.forEach(function (value, index) {
+          const text = typeof value === "number" ? value.toFixed(1) + "°" : "--°";
+          if (angleValues[index]) {
+            angleValues[index].textContent = text;
+          }
+          if (readouts[index]) {
+            readouts[index].textContent = text;
+          }
+        });
+        if (!body.services_ready) {
+          linkStatus.textContent = "Waiting for the hardware services.";
+        } else if (!feedbackReady) {
+          linkStatus.textContent = "Waiting for /joint_states.";
+        } else {
+          linkStatus.textContent = "Live feedback from the arm.";
+        }
+        if (!busy) {
+          setBusy(false);
+        }
+      } catch (error) {
+        feedbackReady = false;
+        servicesReady = false;
+        linkStatus.textContent = "Demo UI is not responding.";
+        if (!busy) {
+          setBusy(false);
+        }
+      }
+    }
+
+    refreshState();
+    setInterval(refreshState, 500);
+  </script>
+</body>
+</html>

@@ -8,6 +8,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/MoveJoint.srv"
   "srv/MoveJoints.srv"
   "srv/SetGripper.srv"
+  "srv/MoveCoords.srv"
 )
 
 ament_export_dependencies(rosidl_default_runtime)

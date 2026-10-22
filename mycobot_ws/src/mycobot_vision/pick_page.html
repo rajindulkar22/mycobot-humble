@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>myCobot pick and place</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1c1915;
+      --muted: #5c564c;
+      --line: #d9d2c5;
+      --paper: #f6f3ec;
+      --card: #fffdf8;
+      --accent: #1f4b3a;
+      --accent-ink: #f4f7f4;
+      --stop: #8f1d1d;
+      --stop-ink: #fff8f6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+    }
+    main { max-width: 720px; margin: 0 auto; padding: 24px 20px 48px; }
+    h1 { margin: 0 0 8px; font-size: 1.8rem; font-weight: 650; }
+    h2 { margin: 0 0 8px; font-size: 1.15rem; font-weight: 650; }
+    p { margin: 0; line-height: 1.45; }
+    .lede { color: var(--muted); margin-bottom: 18px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      font: inherit;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    button:disabled { cursor: wait; opacity: 0.6; }
+    .pick { background: var(--accent); color: var(--accent-ink); }
+    .cap { margin-right: 8px; }
+    .cap.red { background: #9d1c1c; color: #fff8f6; }
+    .cap.white {
+      background: #f7f4ee;
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+    .cap.black { background: #1c1915; color: #f6f3ec; }
+    .return {
+      background: transparent;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      margin-left: 8px;
+    }
+    .stop {
+      background: var(--stop);
+      color: var(--stop-ink);
+      margin-top: 12px;
+    }
+    .status { margin-top: 12px; white-space: pre-wrap; }
+    dl { display: grid; grid-template-columns: 140px 1fr; gap: 6px 12px; margin: 0; }
+    dt { color: var(--muted); }
+    dd { margin: 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Pick and place</h1>
+    <p class="lede">
+      The overview camera finds the cap centre, then the arm moves
+      above that point, lowers, and closes. Wrist guidance stays off
+      unless you launch with <code>use_wrist_guidance:=true</code>.
+      Press Red, White, or Black to pick that cap.
+      Live views:
+      <a href="/overview">overview camera</a>,
+      <a href="/wrist">wrist camera</a>.
+      After moving the overview camera, redo pixel spots on the
+      <a href="/calibrate">calibration screen</a>, then Accept.
+      If a step fails, the arm returns to the position where the pick
+      started. Return to start does that move on its own.
+      Zero position moves J1 through J6 to 0°.
+      The preview below does not move the arm. Stop halts it.
+    </p>
+    <section class="card">
+      <dl>
+        <dt>Weights</dt><dd id="weights">Waiting</dd>
+        <dt>Calibration</dt><dd id="calibration">Waiting</dd>
+        <dt>Wrist guide</dt><dd id="wrist-guide">—</dd>
+        <dt>Detection</dt><dd id="detection">None</dd>
+        <dt>Table point</dt><dd id="point">—</dd>
+      </dl>
+      <div style="margin-top: 16px;">
+        <button class="cap red" id="pick-red" data-class="red_cap" type="button">Red</button>
+        <button class="cap white" id="pick-white" data-class="white_cap" type="button">White</button>
+        <button class="cap black" id="pick-black" data-class="black_cap" type="button">Black</button>
+        <button class="return" id="return" type="button">Return to start</button>
+        <button class="return" id="zero" type="button">Zero position</button>
+      </div>
+      <p class="status" id="status">Ready.</p>
+    </section>
+    <section class="card">
+      <h2>Preview, no motion</h2>
+      <p class="lede" id="preview-message">Waiting</p>
+      <dl>
+        <dt>Pixel</dt><dd id="preview-pixel">—</dd>
+        <dt>Table frame</dt><dd id="preview-table">—</dd>
+        <dt>joint1</dt><dd id="preview-joint">—</dd>
+      </dl>
+    </section>
+    <button class="stop" id="stop" type="button">Stop</button>
+  </main>
+  <script>
+    const status = document.getElementById("status");
+    async function refresh() {
+      const response = await fetch("/api/state");
+      if (!response.ok) return;
+      const data = await response.json();
+      document.getElementById("weights").textContent =
+        data.weights_ready
+          ? "Loaded"
+          : (data.weights_message || "Not loaded");
+      document.getElementById("calibration").textContent =
+        data.calibration_ready
+          ? "Ready"
+          : (data.calibration_message || "Not ready");
+      document.getElementById("wrist-guide").textContent =
+        data.use_wrist_guidance ? "On" : "Off (overview only)";
+      const seen = data.detections || {};
+      const names = Object.keys(seen).map(function (name) {
+        return seen[name].class_name.replace("_cap", "")
+          + " " + Math.round(seen[name].score * 100) + "%";
+      });
+      document.getElementById("detection").textContent = names.length
+        ? names.join(", ")
+        : "None";
+      document.getElementById("point").textContent =
+        data.mapped_x_mm === null
+          ? "—"
+          : data.mapped_x_mm + " mm, " + data.mapped_y_mm + " mm";
+      const preview = data.preview || {};
+      document.getElementById("preview-message").textContent =
+        preview.message || "Waiting";
+      document.getElementById("preview-pixel").textContent =
+        preview.pixel_u === null || preview.pixel_u === undefined
+          ? "—"
+          : preview.pixel_u + ", " + preview.pixel_v;
+      document.getElementById("preview-table").textContent =
+        preview.table_x_m === null || preview.table_x_m === undefined
+          ? "—"
+          : preview.table_x_m + " m, " + preview.table_y_m + " m";
+      document.getElementById("preview-joint").textContent =
+        preview.joint1_x_m === null || preview.joint1_x_m === undefined
+          ? "—"
+          : preview.joint1_x_m + " m, "
+            + preview.joint1_y_m + " m, "
+            + preview.joint1_z_m + " m";
+      document.getElementById("return").disabled = data.busy;
+      document.getElementById("zero").disabled =
+        data.busy || !data.services_ready;
+      const ready = data.weights_ready &&
+        data.calibration_ready &&
+        data.services_ready;
+      document.querySelectorAll("button.cap").forEach(function (button) {
+        button.disabled = data.busy || !(ready && seen[button.dataset.class]);
+      });
+    }
+    async function send(path, waiting, payload) {
+      status.textContent = waiting;
+      document.querySelectorAll("button.cap").forEach(function (button) {
+        button.disabled = true;
+      });
+      document.getElementById("return").disabled = true;
+      document.getElementById("zero").disabled = true;
+      const response = await fetch(path, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: payload ? JSON.stringify(payload) : "{}"
+      });
+      const data = await response.json();
+      status.textContent = data.message || "Done.";
+      refresh();
+    }
+    document.querySelectorAll("button.cap").forEach(function (button) {
+      button.addEventListener("click", function () {
+        send(
+          "/api/pick",
+          "Picking the " + button.textContent.toLowerCase()
+            + " cap… press Stop to halt.",
+          {class_name: button.dataset.class}
+        );
+      });
+    });
+    document.getElementById("return").addEventListener("click", function () {
+      send("/api/return", "Returning to the initial position…");
+    });
+    document.getElementById("zero").addEventListener("click", function () {
+      send("/api/zero", "Moving all joints to 0°…");
+    });
+    document.getElementById("stop").addEventListener("click", function () {
+      send("/api/stop", "Stopping…");
+    });
+    refresh();
+    setInterval(refresh, 500);
+  </script>
+</body>
+</html>

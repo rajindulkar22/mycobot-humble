@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>myCobot table calibration</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1c1915;
+      --muted: #5c564c;
+      --line: #d9d2c5;
+      --paper: #f6f3ec;
+      --card: #fffdf8;
+      --accent: #1f4b3a;
+      --accent-ink: #f4f7f4;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+    }
+    main { max-width: 860px; margin: 0 auto; padding: 24px 20px 48px; }
+    h1 { margin: 0 0 8px; font-size: 1.8rem; font-weight: 650; }
+    h2 { margin: 0 0 8px; font-size: 1.15rem; font-weight: 650; }
+    p { margin: 0 0 10px; line-height: 1.45; }
+    a { color: var(--accent); }
+    .lede { color: var(--muted); }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      font: inherit;
+      font-weight: 650;
+      cursor: pointer;
+      background: var(--accent);
+      color: var(--accent-ink);
+      margin: 0 8px 8px 0;
+    }
+    button.secondary {
+      background: transparent;
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+    label { display: block; margin: 10px 0 4px; color: var(--muted); }
+    input {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      font: inherit;
+    }
+    .stage { position: relative; display: inline-block; max-width: 100%; cursor: crosshair; }
+    img { display: block; max-width: 100%; height: auto; }
+    .mark {
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      margin: -7px 0 0 -7px;
+      border: 2px solid #1f4b3a;
+      border-radius: 50%;
+      background: rgba(255, 253, 248, 0.8);
+      pointer-events: none;
+    }
+    .mark.pending { border-color: #9a3412; background: rgba(254, 215, 170, 0.85); }
+    ol { margin: 0; padding-left: 1.2rem; }
+    li { margin: 0 0 6px; }
+    .status { white-space: pre-wrap; }
+    dl { display: grid; grid-template-columns: 180px 1fr; gap: 6px 12px; margin: 0; }
+    dt { color: var(--muted); }
+    dd { margin: 0; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Table calibration</h1>
+    <p class="lede">
+      Click the overview image, then capture the live tool pose.
+      The camera angle changed, so the old pixel pairs are not used.
+      <a href="/">Pick page</a>
+    </p>
+    <section class="card">
+      <h2>Steps</h2>
+      <ol>
+        <li>Put the centre between the gripping pads on a table mark. Keep that pad centre still.</li>
+        <li>Click that same point on the image. Pose age must be under 1 second.</li>
+        <li>Press <b>Capture pose</b>. This saves the pixel and <code>/mycobot/tool_pose_raw</code>. It does not move the arm.</li>
+        <li>Repeat at five spread-out marks, then one extra mark for the check. Cover both left-right and forward-back.</li>
+        <li>Confirm table height and hover, capture the drop, then <b>Accept</b> only if the check error is under 12 mm.</li>
+      </ol>
+      <p class="lede">Height, hover, and drop already saved from the last physical reading stay as starting values. They are not a new pixel map.</p>
+    </section>
+    <section class="card">
+      <div class="stage" id="stage">
+        <img id="camera" alt="Overview camera" src="/api/camera.jpg">
+      </div>
+      <p class="status" id="status">Click the pad centre on the image, then capture the pose.</p>
+      <p>
+        <button id="capture" type="button">Capture pose</button>
+        <button id="undo" class="secondary" type="button">Remove latest spot</button>
+        <button id="clear" class="secondary" type="button">Clear all spots</button>
+      </p>
+      <p>
+        <button id="release" class="secondary" type="button">Release motors</button>
+        <button id="hold" class="secondary" type="button">Hold motors</button>
+      </p>
+      <dl>
+        <dt>Clicked pixel</dt><dd id="pending">None</dd>
+        <dt>Live tool pose</dt><dd id="pose">Waiting</dd>
+        <dt>Fit spots</dt><dd id="spots">0 of 5</dd>
+        <dt>Spot span</dt><dd id="span">—</dd>
+        <dt>Check spot</dt><dd id="check">Not saved</dd>
+      </dl>
+    </section>
+    <section class="card">
+      <h2>Measured heights and drop</h2>
+      <label for="table-z">Table height (mm)</label>
+      <input id="table-z" inputmode="decimal" placeholder="56">
+      <label for="hover">Hover clearance (mm)</label>
+      <input id="hover" inputmode="decimal" placeholder="40">
+      <p>
+        <button id="save-height" type="button">Save height and hover</button>
+        <button id="drop" class="secondary" type="button">Capture drop position</button>
+      </p>
+      <dl>
+        <dt>Saved table height</dt><dd id="saved-z">—</dd>
+        <dt>Saved hover</dt><dd id="saved-hover">—</dd>
+        <dt>Saved drop</dt><dd id="saved-drop">—</dd>
+      </dl>
+    </section>
+    <section class="card">
+      <h2>Calculated target, no motion</h2>
+      <p class="lede" id="report">Save five fit spots, the check spot, heights and drop.</p>
+      <dl>
+        <dt>Predicted check</dt><dd id="predicted">—</dd>
+        <dt>Measured check</dt><dd id="measured">—</dd>
+        <dt>Check error</dt><dd id="error">—</dd>
+        <dt>Accepted</dt><dd id="accepted">No</dd>
+      </dl>
+      <p>
+        <button id="accept" type="button">Accept calibration</button>
+      </p>
+    </section>
+  </main>
+  <script>
+    const status = document.getElementById("status");
+    const camera = document.getElementById("camera");
+    const stage = document.getElementById("stage");
+    let wizard = {pairs: [], check: null, pending_pixel: null};
+    function millimetres(value) {
+      return value === null || value === undefined ? "—" : value + " mm";
+    }
+    function spotSpan(pairs) {
+      if (!pairs || pairs.length < 2) return "—";
+      const us = pairs.map(function (p) { return p.u; });
+      const vs = pairs.map(function (p) { return p.v; });
+      const su = Math.max.apply(null, us) - Math.min.apply(null, us);
+      const sv = Math.max.apply(null, vs) - Math.min.apply(null, vs);
+      return Math.round(su) + " x " + Math.round(sv) + " px (need 100 x 80)";
+    }
+    function placeMark(spot, pending) {
+      const scaleX = camera.clientWidth / camera.naturalWidth;
+      const scaleY = camera.clientHeight / camera.naturalHeight;
+      const mark = document.createElement("span");
+      mark.className = pending ? "mark pending" : "mark";
+      mark.style.left = (spot.u * scaleX) + "px";
+      mark.style.top = (spot.v * scaleY) + "px";
+      stage.appendChild(mark);
+    }
+    function drawMarks() {
+      document.querySelectorAll(".mark").forEach(function (mark) { mark.remove(); });
+      if (!camera.naturalWidth) return;
+      (wizard.pairs || []).forEach(function (spot) { placeMark(spot, false); });
+      if (wizard.check) placeMark(wizard.check, false);
+      if (wizard.pending_pixel) placeMark(wizard.pending_pixel, true);
+    }
+    function show(data) {
+      wizard = data.wizard || data;
+      const pose = wizard.tool_pose_mm;
+      document.getElementById("pose").textContent = pose
+        ? pose[0] + ", " + pose[1] + ", " + pose[2]
+          + " mm, age " + wizard.tool_pose_age_seconds + " s"
+        : "Waiting";
+      document.getElementById("pending").textContent = wizard.pending_pixel
+        ? wizard.pending_pixel.u + ", " + wizard.pending_pixel.v + " px"
+        : "None";
+      document.getElementById("spots").textContent =
+        (wizard.pairs || []).length + " of " + wizard.fit_required;
+      document.getElementById("span").textContent = spotSpan(wizard.pairs);
+      document.getElementById("check").textContent = wizard.check
+        ? wizard.check.u + ", " + wizard.check.v + " px -> "
+          + wizard.check.x + ", " + wizard.check.y + " mm"
+        : "Not saved";
+      document.getElementById("saved-z").textContent = millimetres(wizard.table_z_mm);
+      document.getElementById("saved-hover").textContent = millimetres(wizard.hover_mm);
+      document.getElementById("saved-drop").textContent =
+        wizard.drop_x_mm === null || wizard.drop_x_mm === undefined
+          ? "—"
+          : wizard.drop_x_mm + ", " + wizard.drop_y_mm + " mm";
+      if (wizard.table_z_mm != null && !document.getElementById("table-z").value) {
+        document.getElementById("table-z").value = wizard.table_z_mm;
+      }
+      if (wizard.hover_mm != null && !document.getElementById("hover").value) {
+        document.getElementById("hover").value = wizard.hover_mm;
+      }
+      const report = wizard.report;
+      document.getElementById("report").textContent = report
+        ? (report.message || "Displayed only. Nothing was sent to the arm.")
+        : "Save five fit spots, the check spot, the heights and the drop.";
+      document.getElementById("predicted").textContent = report && report.predicted_x_mm !== undefined
+        ? report.predicted_x_mm + ", " + report.predicted_y_mm + " mm" : "—";
+      document.getElementById("measured").textContent = report && report.measured_x_mm !== undefined
+        ? report.measured_x_mm + ", " + report.measured_y_mm + " mm" : "—";
+      document.getElementById("error").textContent = report && report.error_mm !== undefined
+        ? report.error_mm + " mm" : "—";
+      document.getElementById("accepted").textContent = wizard.accepted
+        ? "Yes - picking enabled"
+        : "No - finish spots then Accept";
+      drawMarks();
+    }
+    async function refresh() {
+      const response = await fetch("/api/state");
+      if (!response.ok) return;
+      show(await response.json());
+    }
+    async function post(path, body) {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body || {})
+      });
+      const data = await response.json();
+      status.textContent = data.message || "Done.";
+      if (data.wizard) show({wizard: data.wizard});
+      else refresh();
+    }
+    stage.addEventListener("click", function (event) {
+      if (!camera.naturalWidth) return;
+      const rect = camera.getBoundingClientRect();
+      const u = (event.clientX - rect.left) * (camera.naturalWidth / rect.width);
+      const v = (event.clientY - rect.top) * (camera.naturalHeight / rect.height);
+      post("/api/calibrate/click", {u: u, v: v});
+    });
+    document.getElementById("capture").onclick = function () { post("/api/calibrate/capture"); };
+    document.getElementById("undo").onclick = function () { post("/api/calibrate/undo"); };
+    document.getElementById("clear").onclick = function () { post("/api/calibrate/clear"); };
+    document.getElementById("release").onclick = function () { post("/api/calibrate/release"); };
+    document.getElementById("hold").onclick = function () { post("/api/calibrate/hold"); };
+    document.getElementById("drop").onclick = function () { post("/api/calibrate/drop"); };
+    document.getElementById("save-height").onclick = function () {
+      post("/api/calibrate/clearances", {
+        table_z_mm: document.getElementById("table-z").value,
+        hover_mm: document.getElementById("hover").value
+      });
+    };
+    document.getElementById("accept").onclick = function () { post("/api/calibrate/accept"); };
+    let imageBusy = false;
+    camera.onload = function () { imageBusy = false; drawMarks(); };
+    camera.onerror = function () { imageBusy = false; };
+    setInterval(function () {
+      if (imageBusy) return;
+      imageBusy = true;
+      camera.src = "/api/camera.jpg?t=" + Date.now();
+    }, 250);
+    setInterval(refresh, 400);
+    refresh();
+  </script>
+</body>
+</html>

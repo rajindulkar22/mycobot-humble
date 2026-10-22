@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>myCobot joint diagnostic</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1c1915;
+      --muted: #5c564c;
+      --line: #d9d2c5;
+      --paper: #f6f3ec;
+      --card: #fffdf8;
+      --accent: #1f4b3a;
+      --accent-ink: #f4f7f4;
+      --stop: #8f1d1d;
+      --stop-ink: #fff8f6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+    }
+    main { max-width: 980px; margin: 0 auto; padding: 24px 20px 48px; }
+    h1 { margin: 0 0 8px; font-size: 1.8rem; font-weight: 650; }
+    h2 { margin: 0 0 8px; font-size: 1.15rem; }
+    p { margin: 0; line-height: 1.45; }
+    .notice, .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; }
+    .notice { padding: 14px 16px; margin: 18px 0; color: var(--muted); }
+    .card { padding: 16px; margin-bottom: 16px; }
+    .lede { color: var(--muted); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 650; font-size: 0.85rem; }
+    .actions, .joint-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    button {
+      border: 0; border-radius: 999px; padding: 10px 14px;
+      font: inherit; font-weight: 650; cursor: pointer;
+    }
+    button:disabled { cursor: wait; opacity: 0.6; }
+    .primary { background: var(--accent); color: var(--accent-ink); }
+    .stop { background: var(--stop); color: var(--stop-ink); }
+    .ghost { background: #fff; color: var(--ink); border: 1px solid var(--line); }
+    .status { margin-top: 12px; white-space: pre-wrap; }
+    .verdict { font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+    .tracked { color: var(--accent); }
+    .bad { color: var(--stop); }
+    .report { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 12px; }
+    .notes { margin: 8px 0 0; padding-left: 18px; }
+    .summary { font-size: 1.05rem; }
+    .problem-title { font-size: 1.45rem; font-weight: 700; margin-bottom: 6px; }
+    .problem-title.bad { color: var(--stop); }
+    .problem-title.tracked { color: var(--accent); }
+    .joint-map { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
+    .joint-pill {
+      border: 1px solid var(--line); border-radius: 12px; background: #fff;
+      padding: 10px 8px; text-align: center;
+    }
+    .joint-pill strong { display: block; font-size: 1rem; }
+    .joint-pill span { color: var(--muted); font-size: 0.8rem; }
+    .joint-pill.focus { border-color: var(--stop); background: #fff6f4; }
+    .joint-pill.ok { border-color: var(--accent); }
+    .scale { position: relative; height: 74px; margin-top: 16px; }
+    .scale-line { position: absolute; left: 0; right: 0; top: 28px; height: 4px; background: var(--line); border-radius: 99px; }
+    .mark { position: absolute; top: 18px; width: 2px; height: 24px; }
+    .mark b { position: absolute; top: 28px; left: 4px; white-space: nowrap; font-size: 0.75rem; font-weight: 650; }
+    .mark.start { background: #8a8175; }
+    .mark.target { background: var(--accent); }
+    .mark.final { background: var(--stop); width: 4px; }
+    .bars { display: grid; gap: 8px; margin-top: 8px; }
+    .bar-row { display: grid; grid-template-columns: 110px 1fr 70px; gap: 8px; align-items: center; }
+    .track { height: 10px; background: #efeae1; border-radius: 99px; overflow: hidden; }
+    .fill { height: 100%; }
+    .fill.command { background: var(--accent); }
+    .fill.measured { background: var(--stop); }
+    .stage { position: relative; background: #1c1915; border-radius: 12px; overflow: hidden; margin-bottom: 12px; }
+    #arm-view { width: 100%; height: auto; display: block; cursor: grab; touch-action: none; }
+    #arm-caption {
+      position: absolute; left: 14px; right: 14px; bottom: 12px;
+      color: #fff8f6; font-weight: 700; font-size: 1.05rem; line-height: 1.35;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Joint diagnostic</h1>
+    <p class="lede">Check all joints commands J1 through J6, one at a time, +2° at speed 5. A joint that fails is recorded in red and the next joint is still checked. A joint returns to its start only when its own outward move succeeds. Stop ends the run.</p>
+    <section class="notice">
+      <p id="age">Waiting for /joint_states.</p>
+    </section>
+    <section class="card" id="problem-card">
+      <h2>Live arm</h2>
+      <div class="stage">
+        <canvas id="arm-view" width="920" height="480"></canvas>
+        <p id="arm-caption">Waiting for joint feedback.</p>
+      </div>
+      <p class="lede">Drag the picture to turn it. The solid arm is the measured pose from the same joint chain as the URDF. A faded arm is the pose the failed command asked for. The red joint is the one that failed.</p>
+      <h2>Current problem</h2>
+      <p class="problem-title" id="problem-title">Waiting for feedback.</p>
+      <p class="lede" id="problem-detail">The picture updates from live joint feedback and from a failed check.</p>
+      <div class="joint-map" id="joint-map"></div>
+      <div class="scale" id="error-scale"></div>
+      <div class="bars" id="error-bars"></div>
+    </section>
+    <section class="card">
+      <h2>Live feedback</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Joint</th>
+            <th>Measured °</th>
+            <th>Commanded °</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="joints"></tbody>
+      </table>
+      <div class="actions">
+        <button class="primary" id="check-all" type="button">Check all joints</button>
+        <button class="ghost" id="initial" type="button">Initial position</button>
+        <button class="ghost" id="status" type="button">Read controller status</button>
+        <button class="stop" id="stop" type="button">Stop</button>
+      </div>
+      <p class="status" id="controller"></p>
+    </section>
+    <section class="card">
+      <h2>Report</h2>
+      <p class="summary" id="summary">No check has been run.</p>
+      <div id="reports"></div>
+    </section>
+  </main>
+  <script>
+    const jointBody = document.querySelector("#joints");
+    const age = document.querySelector("#age");
+    const summary = document.querySelector("#summary");
+    const reports = document.querySelector("#reports");
+    const controller = document.querySelector("#controller");
+    let sessionProblems = [];
+    const problemTitle = document.querySelector("#problem-title");
+    const problemDetail = document.querySelector("#problem-detail");
+    const jointMap = document.querySelector("#joint-map");
+    const errorScale = document.querySelector("#error-scale");
+    const errorBars = document.querySelector("#error-bars");
+    const problemNames = {
+      timeout: "The wait timed out",
+      controller: "The controller reported an error",
+      feedback: "Joint feedback was unusable",
+      movement: "The joint did not follow the command",
+      opposite: "The joint moved the opposite way",
+      still: "The joint did not move",
+      short: "The joint stopped short of the target",
+      overshoot: "The joint passed the target",
+      tracked: "This joint reached the target",
+      rejected: "The command was rejected before motion",
+      disabled: "Motion is disabled",
+      stale: "Feedback is old",
+      missing: "No joint feedback"
+    };
+    const armCanvas = document.querySelector("#arm-view");
+    const armCaption = document.querySelector("#arm-caption");
+    const armCtx = armCanvas.getContext("2d");
+    let armYaw = 0.85;
+    let armPitch = 0.62;
+    let armDrag = null;
+    let armSnapshot = { state: null, problem: null, reason: null };
+    const armChain = [
+      { id: 1, xyz: [0, 0, 0.15756], rpy: [0, 0, 0] },
+      { id: 2, xyz: [0, 0, -0.001], rpy: [0, 1.5708, -1.5708] },
+      { id: 3, xyz: [-0.1104, 0, 0], rpy: [0, 0, 0] },
+      { id: 4, xyz: [-0.096, 0, 0.06462], rpy: [0, 0, -1.5708] },
+      { id: 5, xyz: [0, -0.07318, 0], rpy: [1.5708, -1.5708, 0] },
+      { id: 6, xyz: [0, 0.0456, 0], rpy: [-1.5708, 0, 0] }
+    ];
+
+    function matMul(a, b) {
+      const out = [];
+      for (let row = 0; row < 4; row += 1) {
+        out[row] = [];
+        for (let col = 0; col < 4; col += 1) {
+          out[row][col] = a[row][0] * b[0][col] + a[row][1] * b[1][col] + a[row][2] * b[2][col] + a[row][3] * b[3][col];
+        }
+      }
+      return out;
+    }
+
+    function trans(x, y, z) {
+      return [[1, 0, 0, x], [0, 1, 0, y], [0, 0, 1, z], [0, 0, 0, 1]];
+    }
+
+    function rotX(angle) {
+      const c = Math.cos(angle);
+      const s = Math.sin(angle);
+      return [[1, 0, 0, 0], [0, c, -s, 0], [0, s, c, 0], [0, 0, 0, 1]];
+    }
+
+    function rotY(angle) {
+      const c = Math.cos(angle);
+      const s = Math.sin(angle);
+      return [[c, 0, s, 0], [0, 1, 0, 0], [-s, 0, c, 0], [0, 0, 0, 1]];
+    }
+
+    function rotZ(angle) {
+      const c = Math.cos(angle);
+      const s = Math.sin(angle);
+      return [[c, -s, 0, 0], [s, c, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]];
+    }
+
+    function rpy(roll, pitch, yaw) {
+      return matMul(rotZ(yaw), matMul(rotY(pitch), rotX(roll)));
+    }
+
+    function jointOrigin(xyz, rotation, angle) {
+      return matMul(trans(xyz[0], xyz[1], xyz[2]), matMul(rpy(rotation[0], rotation[1], rotation[2]), rotZ(angle)));
+    }
+
+    function armPoints(degrees) {
+      let frame = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]];
+      const points = [{ id: 0, point: [0, 0, 0] }];
+      armChain.forEach((joint, index) => {
+        const angle = Number(degrees[index] || 0) * Math.PI / 180;
+        frame = matMul(frame, jointOrigin(joint.xyz, joint.rpy, angle));
+        points.push({ id: joint.id, point: [frame[0][3], frame[1][3], frame[2][3]] });
+      });
+      return points;
+    }
+
+    function projectArm(point) {
+      const x = point[0];
+      const y = point[1];
+      const z = point[2] - 0.22;
+      const cy = Math.cos(armYaw);
+      const sy = Math.sin(armYaw);
+      const x1 = cy * x - sy * y;
+      const y1 = sy * x + cy * y;
+      const cp = Math.cos(armPitch);
+      const sp = Math.sin(armPitch);
+      const y2 = cp * y1 - sp * z;
+      const z2 = sp * y1 + cp * z;
+      const depth = 2.4 + y2;
+      const scale = 1900 / depth;
+      return { x: 460 + x1 * scale, y: 250 - z2 * scale, depth };
+    }
+
+    function drawArm(points, color, width, dashed) {
+      const projected = points.map((item) => ({ id: item.id, at: projectArm(item.point) }));
+      armCtx.save();
+      armCtx.strokeStyle = color;
+      armCtx.lineWidth = width;
+      armCtx.lineCap = "round";
+      if (dashed) {
+        armCtx.setLineDash([7, 7]);
+      }
+      armCtx.beginPath();
+      projected.forEach((item, index) => {
+        if (index === 0) {
+          armCtx.moveTo(item.at.x, item.at.y);
+        } else {
+          armCtx.lineTo(item.at.x, item.at.y);
+        }
+      });
+      armCtx.stroke();
+      armCtx.restore();
+      return projected;
+    }
+
+    function paintArm(state, problem, reason) {
+      armSnapshot = { state, problem, reason };
+      const joints = state && state.joints ? state.joints : [];
+      const byId = {};
+      joints.forEach((joint) => {
+        byId[joint.joint_id] = joint.measured_degrees;
+      });
+      const measured = [1, 2, 3, 4, 5, 6].map((id) => byId[id] || 0);
+      const hasFeedback = joints.some((joint) => joint.measured_degrees !== null && joint.measured_degrees !== undefined);
+      armCtx.clearRect(0, 0, armCanvas.width, armCanvas.height);
+      armCtx.fillStyle = "#1c1915";
+      armCtx.fillRect(0, 0, armCanvas.width, armCanvas.height);
+      armCtx.strokeStyle = "#3a342c";
+      armCtx.lineWidth = 1;
+      for (let step = -2; step <= 2; step += 1) {
+        const a = projectArm([step * 0.1, -0.25, 0]);
+        const b = projectArm([step * 0.1, 0.25, 0]);
+        const c = projectArm([-0.25, step * 0.1, 0]);
+        const d = projectArm([0.25, step * 0.1, 0]);
+        armCtx.beginPath();
+        armCtx.moveTo(a.x, a.y);
+        armCtx.lineTo(b.x, b.y);
+        armCtx.moveTo(c.x, c.y);
+        armCtx.lineTo(d.x, d.y);
+        armCtx.stroke();
+      }
+      const target = problem && problem.target !== null && problem.target !== undefined ? Number(problem.target) : null;
+      if (problem && problem.jointId && Number.isFinite(target)) {
+        const asked = measured.slice();
+        asked[problem.jointId - 1] = target;
+        drawArm(armPoints(asked), "rgba(143, 196, 164, 0.85)", 4, true);
+      }
+      const projected = hasFeedback ? drawArm(armPoints(measured), "#f4efe6", 8, false) : [];
+      projected.forEach((item) => {
+        if (!item.id) {
+          return;
+        }
+        const failed = sessionProblems.some((problem) => problem.jointId === item.id && problem.reason !== "tracked");
+        armCtx.beginPath();
+        armCtx.fillStyle = failed ? "#e24b4b" : "#f4efe6";
+        armCtx.arc(item.at.x, item.at.y, failed ? 13 : 6, 0, Math.PI * 2);
+        armCtx.fill();
+        armCtx.fillStyle = failed ? "#fff8f6" : "#c8bfb2";
+        armCtx.font = failed ? "700 16px sans-serif" : "12px sans-serif";
+        armCtx.fillText("J" + item.id, item.at.x + 14, item.at.y - 8);
+      });
+      armCtx.fillStyle = "#c8bfb2";
+      armCtx.font = "13px sans-serif";
+      armCtx.fillText("Solid arm: measured pose", 16, 28);
+      armCtx.fillText("Dashed arm: commanded pose of the failed joint", 16, 48);
+      const failedProblems = sessionProblems.filter((item) => item.reason !== "tracked");
+      if (failedProblems.length) {
+        armCaption.textContent = failedProblems.map((item) => `J${item.jointId} ${problemNames[item.reason] || "failed"}`).join(". ") + ".";
+      } else if (!hasFeedback) {
+        armCaption.textContent = "No joint feedback yet, so the arm cannot be drawn.";
+      } else if (reason === "stale") {
+        armCaption.textContent = "The arm is drawn from an old sample. Feedback is older than 1.5 seconds.";
+      } else {
+        armCaption.textContent = "Measured pose. No failed joint is waiting.";
+      }
+    }
+
+    armCanvas.addEventListener("pointerdown", (event) => {
+      armDrag = { x: event.clientX, y: event.clientY, yaw: armYaw, pitch: armPitch };
+      armCanvas.setPointerCapture(event.pointerId);
+    });
+    armCanvas.addEventListener("pointermove", (event) => {
+      if (!armDrag) {
+        return;
+      }
+      armYaw = armDrag.yaw + (event.clientX - armDrag.x) * 0.01;
+      armPitch = Math.max(0.15, Math.min(1.25, armDrag.pitch + (event.clientY - armDrag.y) * 0.008));
+      paintArm(armSnapshot.state, armSnapshot.problem, armSnapshot.reason);
+    });
+    armCanvas.addEventListener("pointerup", () => {
+      armDrag = null;
+    });
+
+    function number(value) {
+      return value === null || value === undefined ? "—" : Number(value).toFixed(2);
+    }
+
+    function escapeText(value) {
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+
+    function verdictClass(verdict) {
+      return verdict === "tracked" ? "tracked" : "bad";
+    }
+
+    function renderState(state) {
+      const rows = state.joints.map((joint) => `
+        <tr>
+          <td>J${joint.joint_id}<br><span class="lede">${joint.name}</span></td>
+          <td>${number(joint.measured_degrees)}</td>
+          <td>${number(joint.commanded_degrees)}</td>
+          <td><button class="ghost check-one" type="button" data-joint="${joint.joint_id}">Check J${joint.joint_id}</button></td>
+        </tr>
+      `);
+      jointBody.innerHTML = rows.join("");
+      if (state.feedback_age_seconds === null) {
+        age.textContent = "No joint feedback has arrived. The hardware node must be publishing /joint_states.";
+      } else if (state.feedback_age_seconds > 1.5) {
+        age.textContent = `Feedback is ${state.feedback_age_seconds.toFixed(1)}s old. The page is showing the last sample, not a new read.`;
+      } else {
+        age.textContent = `Feedback age ${state.feedback_age_seconds.toFixed(2)}s. Step ${state.step_degrees}°, speed ${state.speed}, diagnostic tolerance ${state.tolerance_degrees}°.`;
+      }
+      document.querySelectorAll(".check-one").forEach((button) => {
+        button.disabled = state.checking;
+        button.addEventListener("click", () => checkOne(Number(button.dataset.joint)));
+      });
+      document.querySelector("#check-all").disabled = state.checking;
+      document.querySelector("#initial").disabled = state.checking;
+      document.querySelector("#status").disabled = state.checking;
+      paintProblem(state);
+    }
+
+    function problemReason(report) {
+      const abort = report && report.abort_reason;
+      const verdict = report && report.verdict;
+      if (abort === "timeout" || abort === "controller" || abort === "feedback") {
+        return abort;
+      }
+      if (verdict && verdict !== "unknown") {
+        return verdict;
+      }
+      if (report && report.success) {
+        return "tracked";
+      }
+      return abort || "movement";
+    }
+
+    function rememberReports(reports, replace) {
+      const incoming = (reports || []).map((report) => {
+        if (!report || !report.joint_id) {
+          return null;
+        }
+        return {
+          jointId: report.joint_id,
+          reason: problemReason(report),
+          start: report.start_degrees,
+          target: report.target_degrees,
+          final: report.final_degrees,
+          error: report.error_degrees,
+          command: report.command_delta,
+          measured: report.measured_delta,
+          message: report.message || ""
+        };
+      }).filter(Boolean);
+      if (replace) {
+        sessionProblems = incoming.filter((item) => item.reason !== "tracked");
+        return;
+      }
+      incoming.forEach((item) => {
+        sessionProblems = sessionProblems.filter((problem) => problem.jointId !== item.jointId);
+        if (item.reason !== "tracked") {
+          sessionProblems.push(item);
+        }
+      });
+    }
+
+    function paintProblem(state) {
+      const problems = sessionProblems.filter((item) => item.reason !== "tracked");
+      const problem = problems[0] || null;
+      const liveProblem = !problems.length && state && state.feedback_age_seconds === null
+        ? "missing"
+        : !problems.length && state && state.feedback_age_seconds > 1.5
+          ? "stale"
+          : null;
+      const reason = problem ? problem.reason : liveProblem;
+      if (problems.length > 1) {
+        problemTitle.textContent = problems.map((item) => `J${item.jointId}: ${problemNames[item.reason] || "failed"}`).join(". ");
+        problemTitle.className = "problem-title bad";
+      } else {
+        problemTitle.textContent = problemNames[reason] || (problem ? "A check failed" : "No active problem");
+        problemTitle.className = "problem-title " + (reason && reason !== "tracked" ? "bad" : reason === "tracked" ? "tracked" : "");
+      }
+      if (problems.length) {
+        problemDetail.textContent = problems.map((item) => item.message).filter(Boolean).join(" ");
+      } else if (liveProblem === "missing") {
+        problemDetail.textContent = "The page has not received /joint_states, so a joint error cannot be judged yet.";
+      } else if (liveProblem === "stale") {
+        problemDetail.textContent = "The last sample is older than 1.5 seconds. The picture is not a new measurement.";
+      } else {
+        problemDetail.textContent = "Feedback is live. Check all joints to mark every joint that fails.";
+      }
+      const joints = state && state.joints ? state.joints : [];
+      jointMap.innerHTML = (joints.length ? joints : [1, 2, 3, 4, 5, 6].map((id) => ({ joint_id: id, measured_degrees: null }))).map((joint) => {
+        const focus = problems.some((item) => item.jointId === joint.joint_id);
+        return `<div class="joint-pill ${focus ? "focus" : ""}"><strong>J${joint.joint_id}</strong><span>${number(joint.measured_degrees)}°</span></div>`;
+      }).join("");
+      paintScale(problem);
+      paintBars(problem);
+      paintArm(state, problem, reason);
+    }
+
+    function paintScale(problem) {
+      if (!problem || [problem.start, problem.target, problem.final].every((value) => value === null || value === undefined)) {
+        errorScale.innerHTML = "";
+        return;
+      }
+      const values = [problem.start, problem.target, problem.final].filter((value) => value !== null && value !== undefined).map(Number);
+      const low = Math.min.apply(null, values) - 0.5;
+      const high = Math.max.apply(null, values) + 0.5;
+      const place = (value) => {
+        if (value === null || value === undefined) {
+          return null;
+        }
+        return Math.min(100, Math.max(0, (Number(value) - low) / (high - low) * 100));
+      };
+      const marks = [
+        ["start", "Start", problem.start],
+        ["target", "Target", problem.target],
+        ["final", "Measured", problem.final]
+      ];
+      errorScale.innerHTML = `<div class="scale-line"></div>` + marks.filter((item) => place(item[2]) !== null).map((item) => `
+        <div class="mark ${item[0]}" style="left:${place(item[2])}%"></div>
+        <b style="left:${place(item[2])}%; top:48px; position:absolute; font-size:0.75rem;">${item[1]} ${number(item[2])}°</b>
+      `).join("");
+    }
+
+    function paintBars(problem) {
+      if (!problem || (problem.command === null || problem.command === undefined) && (problem.measured === null || problem.measured === undefined)) {
+        errorBars.innerHTML = problem && problem.error !== null && problem.error !== undefined
+          ? `<p>Error ${number(problem.error)}° from the target.</p>`
+          : "";
+        return;
+      }
+      const width = (value) => Math.min(100, Math.abs(Number(value) || 0) / 3 * 100);
+      errorBars.innerHTML = `
+        <div class="bar-row"><span>Command</span><div class="track"><div class="fill command" style="width:${width(problem.command)}%"></div></div><span>${number(problem.command)}°</span></div>
+        <div class="bar-row"><span>Measured</span><div class="track"><div class="fill measured" style="width:${width(problem.measured)}%"></div></div><span>${number(problem.measured)}°</span></div>
+        <p>Error ${number(problem.error)}°. ${problem.command && problem.measured && Number(problem.command) * Number(problem.measured) < 0 ? "The measured change went the other way from the command." : "The measured change is in the same direction as the command."}</p>
+      `;
+    }
+
+    function renderHomeJoint(joint) {
+      return `
+        <article class="report">
+          <p class="verdict ${joint.success ? "tracked" : "bad"}">J${joint.joint_id} ${joint.success ? "at goal" : "stopped"}</p>
+          <p>Start ${number(joint.start_degrees)}° → final ${number(joint.final_degrees)}° in ${joint.steps} step(s).</p>
+          <p>${escapeText(joint.message || "")}</p>
+          <ul class="notes">${(joint.notes || []).map((note) => `<li>${escapeText(note)}</li>`).join("")}</ul>
+        </article>
+      `;
+    }
+
+    function renderReport(report) {
+      const companions = (report.companions || [])
+        .filter((item) => item.shift_degrees !== null)
+        .map((item) => `J${item.joint_id} ${Number(item.shift_degrees).toFixed(2)}°`)
+        .join(", ");
+      const returnMove = report.return_move
+        ? `<p>Return target ${number(report.return_move.target_degrees)}°, final ${number(report.return_move.final_degrees)}°. ${escapeText(report.return_move.message || "")}</p>`
+        : "";
+      return `
+        <article class="report">
+          <p class="verdict ${verdictClass(report.verdict)}">J${report.joint_id} ${report.verdict}</p>
+          <p>Start ${number(report.start_degrees)}° → target ${number(report.target_degrees)}° → final ${number(report.final_degrees)}°. Error ${number(report.error_degrees)}°. Command ${number(report.command_delta)}°, measured ${number(report.measured_delta)}°.</p>
+          <p>${escapeText(report.message || "")}</p>
+          ${returnMove}
+          <p>Other joints: ${escapeText(companions || "no comparison")}.</p>
+          <ul class="notes">${(report.notes || []).map((note) => `<li>${escapeText(note)}</li>`).join("")}</ul>
+        </article>
+      `;
+    }
+
+    async function post(path, payload) {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload || {})
+      });
+      return response.json();
+    }
+
+    async function checkOne(jointId) {
+      summary.textContent = `Checking J${jointId}. It moves about 2° and returns only if that move succeeds.`;
+      const body = await post("/api/check_joint", { joint_id: jointId });
+      summary.textContent = body.message && !body.verdict ? body.message : `J${jointId} finished with verdict ${body.verdict}.`;
+      if (body.verdict) {
+        reports.insertAdjacentHTML("afterbegin", renderReport(body));
+        rememberReports([body], false);
+      }
+    }
+
+    document.querySelector("#check-all").addEventListener("click", async () => {
+      summary.textContent = "Checking J1 through J6. A failed joint is recorded, then the next joint is checked.";
+      const body = await post("/api/check_all", {});
+      summary.textContent = body.summary || body.message || "Check finished.";
+      reports.innerHTML = (body.reports || []).map(renderReport).join("");
+      rememberReports(body.reports, true);
+    });
+
+    document.querySelector("#initial").addEventListener("click", async () => {
+      summary.textContent = "Moving joints toward 0° in steps of 2°. A failed step stops this walk only.";
+      const body = await post("/api/initial", {});
+      summary.textContent = body.message || "Initial-position move finished.";
+      reports.innerHTML = (body.joints || []).map(renderHomeJoint).join("");
+      rememberReports(body.joints, false);
+    });
+
+    document.querySelector("#status").addEventListener("click", async () => {
+      const body = await post("/api/status", {});
+      controller.textContent = body.message || "Status unavailable.";
+    });
+
+    document.querySelector("#stop").addEventListener("click", async () => {
+      const body = await post("/api/stop", {});
+      summary.textContent = body.message || "Stop requested.";
+    });
+
+    async function refresh() {
+      try {
+        const response = await fetch("/api/state");
+        renderState(await response.json());
+      } catch (error) {
+        age.textContent = "The diagnostic page lost contact with its server.";
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 500);
+  </script>
+</body>
+</html>

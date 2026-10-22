@@ -1,0 +1,35 @@
+# Pixels on /overview_camera/image_rect, 640x480, to table_frame metres.
+# This is not a /mycobot/tool_pose_raw measurement.
+format_version: 1
+image_topic: "/overview_camera/image_rect"
+reference_type: "ISO_ID_1_card"
+reference_width_m: 0.08560000
+reference_height_m: 0.05398000
+image_width_px: 640
+image_height_px: 480
+image_points_px:
+  - name: "top-left"
+    x: 252.000000
+    y: 259.000000
+  - name: "top-right"
+    x: 343.000000
+    y: 264.000000
+  - name: "bottom-right"
+    x: 340.000000
+    y: 316.000000
+  - name: "bottom-left"
+    x: 243.000000
+    y: 308.000000
+pixel_to_table_homography:
+  rows: 3
+  cols: 3
+  data: [0.001952720900235119, 0.0003586630224921648, -0.5849793896847207, -0.0001277177590120848, 0.002324463214019938, -0.5698510971601185, 0.0009439342820758332, 0.002928359787565721, 1]
+table_to_pixel_homography:
+  rows: 3
+  cols: 3
+  data: [436.2817381961172, -226.345697572798, 126.2324808412225, -44.81524463890239, 273.6766391729582, 129.7389386423675, -0.2805861290564665, -0.5877682014108916, 0.500922543020724]
+validation:
+  width_top_m: 0.08560000
+  width_bottom_m: 0.08560000
+  height_right_m: 0.05398000
+  height_left_m: 0.05398000

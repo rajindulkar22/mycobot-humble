@@ -26,3 +26,14 @@ mycobot_state_publisher:
     gripper_closed_angle_radians: -0.74
 
     multi_joint_motion_enabled: false
+
+    coord_motion_enabled: false
+    coord_min_x_mm: 50.0
+    coord_max_x_mm: 280.0
+    coord_min_y_mm: -200.0
+    coord_max_y_mm: 200.0
+    coord_min_z_mm: 20.0
+    coord_max_z_mm: 250.0
+    coord_tolerance_mm: 8.0
+    coord_angle_tolerance_degrees: 8.0
+    coord_tool_tolerance_degrees: 25.0

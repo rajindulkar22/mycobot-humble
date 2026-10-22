@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>myCobot joint offset</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1c1915;
+      --muted: #5c564c;
+      --line: #d9d2c5;
+      --paper: #f6f3ec;
+      --card: #fffdf8;
+      --accent: #1f4b3a;
+      --stop: #8f1d1d;
+      --lag: #8a5a12;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+    }
+    main { max-width: 980px; margin: 0 auto; padding: 24px 20px 48px; }
+    h1 { margin: 0 0 8px; font-size: 1.8rem; font-weight: 650; }
+    h2 { margin: 0; font-size: 1.15rem; }
+    p { margin: 0; line-height: 1.45; }
+    .lede { color: var(--muted); margin-bottom: 18px; }
+    .legend { display: flex; gap: 16px; margin: 0 0 16px; color: var(--muted); }
+    .swatch { display: inline-block; width: 18px; height: 3px; margin-right: 6px; vertical-align: middle; }
+    .swatch.command { background: var(--accent); }
+    .swatch.measured { background: var(--stop); }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px 16px 12px;
+      margin-bottom: 12px;
+    }
+    .head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+    .error { font-size: 1.35rem; font-weight: 700; }
+    .label {
+      display: inline-block;
+      margin-left: 8px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      background: #efeae1;
+      color: var(--muted);
+    }
+    .label.tracking { background: #e5f0ea; color: var(--accent); }
+    .label.offset, .label.missed, .label.direction { background: #f8e6e4; color: var(--stop); }
+    .label.lag { background: #f6ecd8; color: var(--lag); }
+    canvas { width: 100%; height: 140px; display: block; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Joint offset</h1>
+    <p class="lede">
+      Each strip is the last 30 seconds. The number is measured minus
+      commanded. A difference that remains after the arm has been still
+      for a second, and is larger than 0.5°, is an offset. A difference
+      that shows up only while the arm is moving is lag. A gap in the
+      red line is a missed read, not an offset.
+    </p>
+    <p class="legend">
+      <span><i class="swatch command"></i>Commanded</span>
+      <span><i class="swatch measured"></i>Measured</span>
+    </p>
+    <section id="joints"></section>
+  </main>
+  <script>
+    const root = document.getElementById("joints");
+    for (let index = 0; index < 6; index += 1) {
+      const card = document.createElement("article");
+      card.className = "card";
+      card.innerHTML =
+        '<div class="head"><h2>J' + (index + 1) + '</h2>' +
+        '<div><span class="error" id="error-' + index + '">—</span>' +
+        '<span class="label" id="label-' + index + '">waiting</span></div></div>' +
+        '<canvas id="plot-' + index + '"></canvas>';
+      root.appendChild(card);
+    }
+
+    function labelClass(label) {
+      if (label === "missed read") return "missed";
+      if (label === "wrong direction") return "direction";
+      return label;
+    }
+
+    function draw(canvas, joint) {
+      const ratio = window.devicePixelRatio || 1;
+      const width = canvas.clientWidth;
+      const height = 140;
+      canvas.width = Math.max(1, Math.floor(width * ratio));
+      canvas.height = Math.floor(height * ratio);
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+      const pad = {left: 46, right: 8, top: 8, bottom: 18};
+      const plotWidth = width - pad.left - pad.right;
+      const plotHeight = height - pad.top - pad.bottom;
+      let min = Infinity;
+      let max = -Infinity;
+      joint.commanded.concat(joint.measured).forEach(function (point) {
+        min = Math.min(min, point[1]);
+        max = Math.max(max, point[1]);
+      });
+      if (!isFinite(min)) {
+        min = -1;
+        max = 1;
+      }
+      if (max - min < 2) {
+        const middle = (max + min) / 2;
+        min = middle - 1;
+        max = middle + 1;
+      }
+      const span = max - min;
+      function xOf(time) {
+        return pad.left + ((time + 30) / 30) * plotWidth;
+      }
+      function yOf(value) {
+        return pad.top + (1 - (value - min) / span) * plotHeight;
+      }
+      ctx.strokeStyle = "#d9d2c5";
+      ctx.beginPath();
+      ctx.moveTo(pad.left, pad.top);
+      ctx.lineTo(pad.left, pad.top + plotHeight);
+      ctx.lineTo(pad.left + plotWidth, pad.top + plotHeight);
+      ctx.stroke();
+      ctx.fillStyle = "#5c564c";
+      ctx.font = "11px Segoe UI, sans-serif";
+      ctx.fillText(max.toFixed(1) + "°", 2, pad.top + 10);
+      ctx.fillText(min.toFixed(1) + "°", 2, pad.top + plotHeight);
+      stroke(ctx, joint.commanded, "#1f4b3a", xOf, yOf);
+      stroke(ctx, joint.measured, "#8f1d1d", xOf, yOf);
+    }
+
+    function stroke(ctx, points, color, xOf, yOf) {
+      if (!points.length) return;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      points.forEach(function (point, index) {
+        const x = xOf(point[0]);
+        const y = yOf(point[1]);
+        if (index === 0 || point[0] - points[index - 1][0] > 0.4) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      });
+      ctx.stroke();
+    }
+
+    async function refresh() {
+      const response = await fetch("/api/history");
+      if (!response.ok) return;
+      const data = await response.json();
+      data.joints.forEach(function (joint, index) {
+        const error = document.getElementById("error-" + index);
+        const label = document.getElementById("label-" + index);
+        error.textContent = joint.error_degrees === null
+          ? "—"
+          : (joint.error_degrees > 0 ? "+" : "") + joint.error_degrees.toFixed(2) + "°";
+        label.textContent = joint.label;
+        label.className = "label " + labelClass(joint.label);
+        draw(document.getElementById("plot-" + index), joint);
+      });
+    }
+
+    refresh();
+    setInterval(refresh, 250);
+  </script>
+</body>
+</html>
