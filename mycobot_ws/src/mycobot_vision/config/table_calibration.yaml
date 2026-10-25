@@ -1,53 +1,57 @@
-# Accepted for the camera view after the angle change.
-# Pixels are the centre of the open finger gap. x, y, z are
-# millimetres from /mycobot/tool_pose_raw. The check spot is not fitted.
-# Check error 2.16 mm. Backup of the old view:
-# table_calibration.before_view_change.yaml
+# Accepted for picking. Restart is not required; the pick node reloads this file on Accept.
+# u and v are image pixels. x, y and z are millimetres
+# from /mycobot/tool_pose_raw. The check spot is not fitted.
 table_calibration:
   accepted: true
-  table_z_mm: 56.0
+  table_z_mm: 64.0
   hover_mm: 40.0
   tool_rx: -170.0
   tool_ry: 3.0
   tool_rz: -125.0
-  drop_x_mm: 263.6
-  drop_y_mm: -47.2
+  drop_x_mm: 250.9
+  drop_y_mm: -49.4
+  drop_red_x_mm: 271.0
+  drop_red_y_mm: 23.1
+  drop_black_x_mm: 270.4
+  drop_black_y_mm: -26.7
+  drop_white_x_mm: 270.6
+  drop_white_y_mm: -83.6
   speed: 12
   pairs:
-  - u: 244.5
-    v: 261.0
-    x: 174.1
-    y: -120.5
-    z: 58.2
+  - u: 212.7
+    v: 151.9
+    x: 172.1
+    y: -119.2
+    z: 67.9
     source: click
-  - u: 372.0
-    v: 277.6
-    x: 251.1
-    y: -43.5
-    z: 60.1
+  - u: 318.3
+    v: 140.2
+    x: 246.9
+    y: -87.1
+    z: 67.4
     source: click
-  - u: 303.3
-    v: 346.9
-    x: 258.8
-    y: -130.9
-    z: 59.7
+  - u: 340.0
+    v: 187.0
+    x: 255.6
+    y: -126.8
+    z: 67.7
     source: click
-  - u: 303.5
-    v: 222.0
-    x: 175.2
-    y: -54.6
-    z: 58.9
+  - u: 270.7
+    v: 88.7
+    x: 201.2
+    y: -54.8
+    z: 67.5
     source: click
-  - u: 306.5
-    v: 276.8
-    x: 216.1
-    y: -90.0
-    z: 60.1
+  - u: 289.4
+    v: 187.9
+    x: 225.3
+    y: -137.0
+    z: 68.0
     source: click
   check:
-    u: 350.6
-    v: 326.7
-    x: 270.9
-    y: -89.8
-    z: 60.6
+    u: 185.5
+    v: 65.6
+    x: 145.2
+    y: -50.7
+    z: 63.9
     source: click

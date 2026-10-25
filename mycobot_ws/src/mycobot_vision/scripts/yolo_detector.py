@@ -30,6 +30,129 @@ from vision_msgs.msg import (
 
 # Silver caps score near 0.10. Red and black keep the yaml threshold.
 WHITE_CAP_CONFIDENCE = 0.08
+LOCK_RADIUS_PX = 20.0
+LOCK_OLD = 0.7
+LOCK_NEW = 0.3
+LOCK_MISS_LIMIT = 3
+LOCK_HITS_NEEDED = 2
+# A disc-checked detection at this score is the cap. The overview
+# detector publishes about every 2.5 s, so waiting for a second hit
+# made the parking pose report a visible cap as missing.
+LOCK_SURE_SCORE = 0.50
+
+
+def new_cap_locks():
+    """Return an empty per-class lock table."""
+    return {}
+
+
+def update_cap_locks(locks, samples):
+    """Lock each cap colour to one nearby centre.
+
+    A detection at LOCK_SURE_SCORE or above is published on the first
+    frame. Weaker hits need two nearby frames. A hop farther than
+    LOCK_RADIUS_PX is ignored. A lock stays through LOCK_MISS_LIMIT
+    blank frames, then drops.
+    """
+    incoming = _best_lock_samples(samples)
+    matched = set()
+    expired = []
+    for name, track in locks.items():
+        sample = incoming.get(name)
+        if sample is not None and _lock_near(track, sample):
+            _blend_lock(track, sample)
+            track["hits"] = int(track.get("hits") or 0) + 1
+            track["missed"] = 0
+            matched.add(name)
+            continue
+        track["missed"] = int(track.get("missed") or 0) + 1
+        if track["missed"] > LOCK_MISS_LIMIT:
+            expired.append(name)
+    for name in expired:
+        locks.pop(name, None)
+    for name, sample in incoming.items():
+        if name in matched or name in locks:
+            continue
+        locks[name] = {
+            "class_name": name,
+            "u": float(sample["u"]),
+            "v": float(sample["v"]),
+            "size_x": float(sample.get("size_x") or 0.0),
+            "size_y": float(sample.get("size_y") or 0.0),
+            "score": float(sample.get("score") or 0.0),
+            "x_min": sample.get("x_min"),
+            "y_min": sample.get("y_min"),
+            "x_max": sample.get("x_max"),
+            "y_max": sample.get("y_max"),
+            "hits": 1,
+            "missed": 0,
+        }
+    return [
+        dict(track)
+        for track in locks.values()
+        if _lock_visible(track)
+    ]
+
+
+def _lock_visible(track):
+    """Return True once a lock is safe to publish."""
+    if float(track.get("score") or 0.0) >= LOCK_SURE_SCORE:
+        return True
+    return int(track.get("hits") or 0) >= LOCK_HITS_NEEDED
+
+
+def _best_lock_samples(samples):
+    """Keep the strongest sample of each class."""
+    by_class = {}
+    for sample in samples or ():
+        name = str(sample.get("class_name") or "").casefold()
+        if not name:
+            continue
+        current = by_class.get(name)
+        if current is None or float(sample.get("score") or 0.0) > float(
+            current.get("score") or 0.0
+        ):
+            chosen = dict(sample)
+            chosen["class_name"] = name
+            by_class[name] = chosen
+    return by_class
+
+
+def _lock_near(track, sample):
+    return math.hypot(
+        float(sample["u"]) - float(track["u"]),
+        float(sample["v"]) - float(track["v"]),
+    ) <= LOCK_RADIUS_PX
+
+
+def _blend_lock(track, sample):
+    track["u"] = LOCK_OLD * float(track["u"]) + LOCK_NEW * float(sample["u"])
+    track["v"] = LOCK_OLD * float(track["v"]) + LOCK_NEW * float(sample["v"])
+    track["size_x"] = float(sample.get("size_x") or track.get("size_x") or 0.0)
+    track["size_y"] = float(sample.get("size_y") or track.get("size_y") or 0.0)
+    track["score"] = float(sample.get("score") or track.get("score") or 0.0)
+    for key in ("x_min", "y_min", "x_max", "y_max"):
+        if sample.get(key) is not None:
+            track[key] = sample[key]
+
+
+def _box_from_track(track):
+    """Return the last box, or a box around the locked centre."""
+    if track.get("x_min") is not None and track.get("y_min") is not None:
+        return (
+            float(track["x_min"]),
+            float(track["y_min"]),
+            float(track.get("x_max") or track["u"]),
+            float(track.get("y_max") or track["v"]),
+        )
+    half_x = float(track.get("size_x") or 28.0) / 2.0
+    half_y = float(track.get("size_y") or 28.0) / 2.0
+    return (
+        float(track["u"]) - half_x,
+        float(track["v"]) - half_y,
+        float(track["u"]) + half_x,
+        float(track["v"]) + half_y,
+    )
 
 
 class YoloDetector(Node):
@@ -113,6 +236,7 @@ class YoloDetector(Node):
         self.bridge = CvBridge()
         self.frame_count = 0
         self.processed_count = 0
+        self._locks = new_cap_locks()
 
         self.image_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -160,13 +284,24 @@ class YoloDetector(Node):
             "/overview_camera/yolo/model_ready",
             _ready_qos(),
         )
-        ready = Bool()
-        ready.data = True
-        self.ready_publisher.publish(ready)
+        self._ready_message = Bool()
+        self._ready_message.data = True
+        # Discovery can finish after the detector has loaded its model.
+        # Re-publish the latched state so pick_place cannot remain
+        # disabled merely because it missed the first publication.
+        self.ready_publisher.publish(self._ready_message)
+        self._ready_timer = self.create_timer(
+            1.0,
+            self._publish_ready,
+        )
 
         self.get_logger().info(
             f"Listening for images on {input_topic}"
         )
+
+    def _publish_ready(self):
+        """Keep the model-ready status visible to late subscribers."""
+        self.ready_publisher.publish(self._ready_message)
 
     def image_callback(self, image_message):
         self.frame_count += 1
@@ -191,9 +326,7 @@ class YoloDetector(Node):
                 verbose=False,
             )[0]
 
-            detections_message = Detection2DArray()
-            detections_message.header = image_message.header
-            verified = []
+            samples = []
 
             if result.boxes is not None:
                 coordinates = result.boxes.xyxy.cpu().numpy()
@@ -246,34 +379,51 @@ class YoloDetector(Node):
                     if disc is None:
                         continue
                     center_u, center_v = disc
-
-                    detection = Detection2D()
-                    detection.header = image_message.header
-
-                    detection.bbox.center.position.x = float(center_u)
-                    detection.bbox.center.position.y = float(center_v)
-                    detection.bbox.center.theta = 0.0
-                    detection.bbox.size_x = size_x
-                    detection.bbox.size_y = size_y
-
-                    hypothesis = ObjectHypothesisWithPose()
-                    hypothesis.hypothesis.class_id = class_name
-                    hypothesis.hypothesis.score = float(confidence)
-
-                    detection.results.append(hypothesis)
-                    detections_message.detections.append(detection)
-                    verified.append(
-                        (
-                            x_min,
-                            y_min,
-                            x_max,
-                            y_max,
-                            center_u,
-                            center_v,
-                            class_name,
-                            float(confidence),
-                        )
+                    samples.append(
+                        {
+                            "class_name": class_name,
+                            "u": center_u,
+                            "v": center_v,
+                            "size_x": size_x,
+                            "size_y": size_y,
+                            "score": float(confidence),
+                            "x_min": x_min,
+                            "y_min": y_min,
+                            "x_max": x_max,
+                            "y_max": y_max,
+                        }
                     )
+
+            locked = update_cap_locks(self._locks, samples)
+            detections_message = Detection2DArray()
+            detections_message.header = image_message.header
+            verified = []
+            for track in locked:
+                x_min, y_min, x_max, y_max = _box_from_track(track)
+                detection = Detection2D()
+                detection.header = image_message.header
+                detection.bbox.center.position.x = float(track["u"])
+                detection.bbox.center.position.y = float(track["v"])
+                detection.bbox.center.theta = 0.0
+                detection.bbox.size_x = float(track.get("size_x") or 0.0)
+                detection.bbox.size_y = float(track.get("size_y") or 0.0)
+                hypothesis = ObjectHypothesisWithPose()
+                hypothesis.hypothesis.class_id = track["class_name"]
+                hypothesis.hypothesis.score = float(track.get("score") or 0.0)
+                detection.results.append(hypothesis)
+                detections_message.detections.append(detection)
+                verified.append(
+                    (
+                        x_min,
+                        y_min,
+                        x_max,
+                        y_max,
+                        track["u"],
+                        track["v"],
+                        track["class_name"],
+                        float(track.get("score") or 0.0),
+                    )
+                )
 
             self.detections_publisher.publish(
                 detections_message
@@ -387,30 +537,72 @@ def _cap_disc_center(image, class_name, pixel_u, pixel_v, size_x, size_y):
         long_side = max(float(short_w), float(short_h))
         if short_side < 14.0 or long_side / short_side > 1.45:
             continue
-        moments = cv2.moments(contour)
-        if moments["m00"] == 0.0:
-            continue
-        center_u = x0 + moments["m10"] / moments["m00"]
-        center_v = y0 + moments["m01"] / moments["m00"]
+        (circle_x, circle_y), radius = cv2.minEnclosingCircle(contour)
+        center_u = x0 + float(circle_x)
+        center_v = y0 + float(circle_y)
         if math.hypot(center_u - pixel_u, center_v - pixel_v) > span * 0.5:
             continue
         if best is None or area > best[0]:
-            best = (area, center_u, center_v)
+            best = (area, center_u, center_v, float(radius))
     if best is None:
         return None
+    center_u, center_v, radius = best[1], best[2], best[3]
     if name == "black_cap":
+        # Reject arm/edge false locks: need a dark, compact disc
+        # away from the frame border.
+        margin = 36.0
+        if (
+            center_u < margin
+            or center_v < margin
+            or center_u > width - margin
+            or center_v > height - margin
+        ):
+            return None
+        # Cable / shadow blobs often sit on the lower edge under the arm.
+        if center_v > height * 0.88:
+            return None
+        # The white print sits in the middle. Sample the plastic around it,
+        # or a bright logo makes a real black cap fail this check.
+        yy, xx = np.ogrid[:height, :width]
+        dist = np.hypot(xx - center_u, yy - center_v)
+        pixels = gray_full[
+            (dist >= radius * 0.45) & (dist <= radius * 0.95)
+        ]
+        if pixels.size < 20:
+            return None
+        median = float(np.median(pixels))
+        dark_frac = float(np.mean(pixels < 40.0))
         # A dark logo on the silver cap is not a black cap.
-        # The whole disc has to be dark.
+        if median > 22.0 or dark_frac < 0.70:
+            return None
+    if name == "white_cap":
+        # Reject bright table / reflection false locks: silver discs are
+        # mid-grey with some darker logo pixels, not near-white table.
+        margin = 36.0
+        if (
+            center_u < margin
+            or center_v < margin
+            or center_u > width - margin
+            or center_v > height - margin
+        ):
+            return None
         circle = np.zeros(gray_full.shape, np.uint8)
         cv2.circle(
             circle,
-            (int(round(best[1])), int(round(best[2]))),
+            (int(round(center_u)), int(round(center_v))),
             12,
             255,
             -1,
         )
         pixels = gray_full[circle > 0]
-        if pixels.size < 20 or float(np.median(pixels)) > 25.0:
+        if pixels.size < 20:
+            return None
+        median = float(np.median(pixels))
+        dark_logo = float(np.mean(pixels < 90.0))
+        bright_frac = float(np.mean(pixels > 170.0))
+        if median < 55.0 or median > 155.0:
+            return None
+        if bright_frac > 0.45 or dark_logo < 0.08:
             return None
     return best[1], best[2]
 

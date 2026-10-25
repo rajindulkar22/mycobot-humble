@@ -54,6 +54,11 @@
       border: 1px solid var(--line);
     }
     .cap.black { background: #1c1915; color: #f6f3ec; }
+    .auto {
+      background: var(--accent);
+      color: var(--accent-ink);
+      margin-left: 8px;
+    }
     .return {
       background: transparent;
       color: var(--ink);
@@ -75,19 +80,17 @@
   <main>
     <h1>Pick and place</h1>
     <p class="lede">
-      The overview camera finds the cap centre, then the arm moves
-      above that point, lowers, and closes. Wrist guidance stays off
-      unless you launch with <code>use_wrist_guidance:=true</code>.
-      Press Red, White, or Black to pick that cap.
+      Overview locks drive XY. Soft-align and up to three adaptive
+      retries run per colour. Wrist guidance stays off unless you
+      launch with <code>use_wrist_guidance:=true</code>.
+      Red / White / Black pick one colour; <b>Pick all</b> queues every
+      locked colour with per-colour drops when calibrated.
       Live views:
       <a href="/overview">overview camera</a>,
       <a href="/wrist">wrist camera</a>.
-      After moving the overview camera, redo pixel spots on the
-      <a href="/calibrate">calibration screen</a>, then Accept.
-      If a step fails, the arm returns to the position where the pick
-      started. Return to start does that move on its own.
-      Zero position moves J1 through J6 to 0°.
-      The preview below does not move the arm. Stop halts it.
+      Calibration:
+      <a href="/calibrate">guided screen</a>.
+      Stop halts motion.
     </p>
     <section class="card">
       <dl>
@@ -96,12 +99,14 @@
         <dt>Wrist guide</dt><dd id="wrist-guide">—</dd>
         <dt>Detection</dt><dd id="detection">None</dd>
         <dt>Table point</dt><dd id="point">—</dd>
+        <dt>Auto task</dt><dd id="auto-task">—</dd>
       </dl>
       <div style="margin-top: 16px;">
         <button class="cap red" id="pick-red" data-class="red_cap" type="button">Red</button>
         <button class="cap white" id="pick-white" data-class="white_cap" type="button">White</button>
         <button class="cap black" id="pick-black" data-class="black_cap" type="button">Black</button>
-        <button class="return" id="return" type="button">Return to start</button>
+        <button class="auto" id="pick-all" type="button">Pick all</button>
+        <button class="return" id="initial" type="button">Initial position</button>
         <button class="return" id="zero" type="button">Zero position</button>
       </div>
       <p class="status" id="status">Ready.</p>
@@ -119,6 +124,17 @@
   </main>
   <script>
     const status = document.getElementById("status");
+    function autoText(data) {
+      const task = data.auto_task;
+      if (!task) return "—";
+      const tracks = task.tracks || {};
+      const parts = Object.keys(tracks).map(function (name) {
+        const row = tracks[name];
+        return name.replace("_cap", "") + ":" + row.status
+          + "(" + row.attempts + ")";
+      });
+      return (task.message || "running") + " · " + parts.join(", ");
+    }
     async function refresh() {
       const response = await fetch("/api/state");
       if (!response.ok) return;
@@ -145,6 +161,7 @@
         data.mapped_x_mm === null
           ? "—"
           : data.mapped_x_mm + " mm, " + data.mapped_y_mm + " mm";
+      document.getElementById("auto-task").textContent = autoText(data);
       const preview = data.preview || {};
       document.getElementById("preview-message").textContent =
         preview.message || "Waiting";
@@ -162,7 +179,8 @@
           : preview.joint1_x_m + " m, "
             + preview.joint1_y_m + " m, "
             + preview.joint1_z_m + " m";
-      document.getElementById("return").disabled = data.busy;
+      document.getElementById("initial").disabled =
+        data.busy || !data.services_ready || !data.calibration_ready;
       document.getElementById("zero").disabled =
         data.busy || !data.services_ready;
       const ready = data.weights_ready &&
@@ -171,13 +189,16 @@
       document.querySelectorAll("button.cap").forEach(function (button) {
         button.disabled = data.busy || !(ready && seen[button.dataset.class]);
       });
+      document.getElementById("pick-all").disabled =
+        data.busy || !ready || Object.keys(seen).length === 0;
     }
     async function send(path, waiting, payload) {
       status.textContent = waiting;
       document.querySelectorAll("button.cap").forEach(function (button) {
         button.disabled = true;
       });
-      document.getElementById("return").disabled = true;
+      document.getElementById("pick-all").disabled = true;
+      document.getElementById("initial").disabled = true;
       document.getElementById("zero").disabled = true;
       const response = await fetch(path, {
         method: "POST",
@@ -198,8 +219,14 @@
         );
       });
     });
-    document.getElementById("return").addEventListener("click", function () {
-      send("/api/return", "Returning to the initial position…");
+    document.getElementById("pick-all").addEventListener("click", function () {
+      send(
+        "/api/pick_all",
+        "Picking all locked caps… press Stop to halt."
+      );
+    });
+    document.getElementById("initial").addEventListener("click", function () {
+      send("/api/return", "Moving to the initial position…");
     });
     document.getElementById("zero").addEventListener("click", function () {
       send("/api/zero", "Moving all joints to 0°…");

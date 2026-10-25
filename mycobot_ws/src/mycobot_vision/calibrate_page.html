@@ -84,28 +84,30 @@
   <main>
     <h1>Table calibration</h1>
     <p class="lede">
-      Click the overview image, then capture the live tool pose.
-      The camera angle changed, so the old pixel pairs are not used.
-      <a href="/">Pick page</a>
+      Prefer <b>ArUco capture</b> (stable pixel centre). Pad auto is a fallback only.
+      <a href="/">Pick page</a> · <a href="/aruco">Print marker</a> · <a href="/overview">Overview</a>
     </p>
     <section class="card">
-      <h2>Steps</h2>
+      <h2>Steps (ArUco)</h2>
       <ol>
-        <li>Put the centre between the gripping pads on a table mark. Keep that pad centre still.</li>
-        <li>Click that same point on the image. Pose age must be under 1 second.</li>
-        <li>Press <b>Capture pose</b>. This saves the pixel and <code>/mycobot/tool_pose_raw</code>. It does not move the arm.</li>
-        <li>Repeat at five spread-out marks, then one extra mark for the check. Cover both left-right and forward-back.</li>
-        <li>Confirm table height and hover, capture the drop, then <b>Accept</b> only if the check error is under 12 mm.</li>
+        <li>Print <a href="/aruco">DICT_4X4_50 id 0</a>, tape it flat with a white margin. Clear coloured caps off the table.</li>
+        <li>Put the <b>open pad centre</b> on the marker centre at table z ≈ 64 mm. Orange cross on overview = marker.</li>
+        <li>Press <b>Hold motors</b>, then <b>ArUco capture</b>. This saves marker (u,v) + live tool pose. Do not use Auto for fit spots.</li>
+        <li>Move the paper to a new place; repeat for five spread-out fits, then one check. Need span ≥ 100×80 px.</li>
+        <li>Capture shared + colour drops (X ≤ ~275 mm), then <b>Accept</b> only if check error is OK and every fit residual is ≤ 8 mm and |z−table_z| ≤ 5.</li>
+        <li>Optional: click the image + Capture pose for a manual override. Prefer ArUco.</li>
       </ol>
-      <p class="lede">Height, hover, and drop already saved from the last physical reading stay as starting values. They are not a new pixel map.</p>
+      <p class="lede">Guided script: <code>python3 ~/mycobot_humble/test_runs/aruco_calibrate.py</code></p>
     </section>
     <section class="card">
       <div class="stage" id="stage">
         <img id="camera" alt="Overview camera" src="/api/camera.jpg">
       </div>
-      <p class="status" id="status">Click the pad centre on the image, then capture the pose.</p>
+      <p class="status" id="status">Centre pads on the ArUco marker, Hold, then ArUco capture.</p>
       <p>
-        <button id="capture" type="button">Capture pose</button>
+        <button id="aruco" type="button">ArUco capture</button>
+        <button id="capture" class="secondary" type="button">Capture pose (click)</button>
+        <button id="auto" class="secondary" type="button">Auto pads (fallback)</button>
         <button id="undo" class="secondary" type="button">Remove latest spot</button>
         <button id="clear" class="secondary" type="button">Clear all spots</button>
       </p>
@@ -129,12 +131,19 @@
       <input id="hover" inputmode="decimal" placeholder="40">
       <p>
         <button id="save-height" type="button">Save height and hover</button>
-        <button id="drop" class="secondary" type="button">Capture drop position</button>
+        <button id="drop" class="secondary" type="button">Capture shared drop</button>
+      </p>
+      <p>
+        <button id="drop-red" class="secondary" type="button">Capture red drop</button>
+        <button id="drop-white" class="secondary" type="button">Capture white drop</button>
+        <button id="drop-black" class="secondary" type="button">Capture black drop</button>
       </p>
       <dl>
         <dt>Saved table height</dt><dd id="saved-z">—</dd>
         <dt>Saved hover</dt><dd id="saved-hover">—</dd>
         <dt>Saved drop</dt><dd id="saved-drop">—</dd>
+        <dt>Colour drops</dt><dd id="saved-colour-drops">—</dd>
+        <dt>Fit residuals</dt><dd id="fit-residuals">—</dd>
       </dl>
     </section>
     <section class="card">
@@ -206,6 +215,17 @@
         wizard.drop_x_mm === null || wizard.drop_x_mm === undefined
           ? "—"
           : wizard.drop_x_mm + ", " + wizard.drop_y_mm + " mm";
+      function colourDrop(label, xKey, yKey) {
+        if (wizard[xKey] == null || wizard[yKey] == null) return null;
+        return label + " " + wizard[xKey] + "," + wizard[yKey];
+      }
+      const colourParts = [
+        colourDrop("R", "drop_red_x_mm", "drop_red_y_mm"),
+        colourDrop("W", "drop_white_x_mm", "drop_white_y_mm"),
+        colourDrop("B", "drop_black_x_mm", "drop_black_y_mm"),
+      ].filter(Boolean);
+      document.getElementById("saved-colour-drops").textContent =
+        colourParts.length ? colourParts.join(" · ") : "using shared drop";
       if (wizard.table_z_mm != null && !document.getElementById("table-z").value) {
         document.getElementById("table-z").value = wizard.table_z_mm;
       }
@@ -222,6 +242,15 @@
         ? report.measured_x_mm + ", " + report.measured_y_mm + " mm" : "—";
       document.getElementById("error").textContent = report && report.error_mm !== undefined
         ? report.error_mm + " mm" : "—";
+      if (report && report.fit_residuals) {
+        document.getElementById("fit-residuals").textContent =
+          report.fit_residuals.map(function (row) {
+            return "#" + row.index + " " + row.error_mm + "mm"
+              + (row.z_mm != null ? " z" + row.z_mm : "");
+          }).join("; ");
+      } else {
+        document.getElementById("fit-residuals").textContent = "—";
+      }
       document.getElementById("accepted").textContent = wizard.accepted
         ? "Yes - picking enabled"
         : "No - finish spots then Accept";
@@ -250,12 +279,23 @@
       const v = (event.clientY - rect.top) * (camera.naturalHeight / rect.height);
       post("/api/calibrate/click", {u: u, v: v});
     });
+    document.getElementById("aruco").onclick = function () { post("/api/calibrate/aruco"); };
     document.getElementById("capture").onclick = function () { post("/api/calibrate/capture"); };
+    document.getElementById("auto").onclick = function () { post("/api/calibrate/auto"); };
     document.getElementById("undo").onclick = function () { post("/api/calibrate/undo"); };
     document.getElementById("clear").onclick = function () { post("/api/calibrate/clear"); };
     document.getElementById("release").onclick = function () { post("/api/calibrate/release"); };
     document.getElementById("hold").onclick = function () { post("/api/calibrate/hold"); };
-    document.getElementById("drop").onclick = function () { post("/api/calibrate/drop"); };
+    document.getElementById("drop").onclick = function () { post("/api/calibrate/drop", {}); };
+    document.getElementById("drop-red").onclick = function () {
+      post("/api/calibrate/drop", {class_name: "red_cap"});
+    };
+    document.getElementById("drop-white").onclick = function () {
+      post("/api/calibrate/drop", {class_name: "white_cap"});
+    };
+    document.getElementById("drop-black").onclick = function () {
+      post("/api/calibrate/drop", {class_name: "black_cap"});
+    };
     document.getElementById("save-height").onclick = function () {
       post("/api/calibrate/clearances", {
         table_z_mm: document.getElementById("table-z").value,

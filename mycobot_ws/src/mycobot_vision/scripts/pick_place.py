@@ -4,9 +4,28 @@
 import json
 import math
 import os
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+from grasp_autonomy import (
+    MAX_ATTEMPTS_PER_CAP,
+    SAFETY_PARAMS,
+    AttemptLogger,
+    CapTrack,
+    TaskManager,
+    classify_grasp,
+    in_workspace,
+    next_candidate,
+    pair_fit_residuals,
+    pixel_near,
+    remember_failed_xy,
+    xy_already_failed,
+)
 
 import cv2
 import numpy as np
@@ -18,6 +37,7 @@ from ament_index_python.packages import (
     get_package_share_directory,
 )
 from mycobot_interfaces.srv import MoveCoords, MoveJoints, SetGripper
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import (
     ExternalShutdownException,
     MultiThreadedExecutor,
@@ -35,7 +55,9 @@ from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
 from vision_msgs.msg import Detection2DArray
 
-DETECTION_MAX_AGE_SECONDS = 2.0
+# The overview detector publishes about every 2.5 s. A 2 s limit
+# expired a lock before the next frame, so a visible cap looked missing.
+DETECTION_MAX_AGE_SECONDS = 6.0
 CAP_CLASSES = {
     "red_cap": "red",
     "black_cap": "black",
@@ -50,6 +72,15 @@ MIN_ROBOT_SPACING_MM = 25.0
 MIN_CALIB_SPAN_U_PX = 100.0
 MIN_CALIB_SPAN_V_PX = 80.0
 MAX_ACCEPT_CHECK_ERROR_MM = 12.0
+# Remake any fit spot whose residual exceeds this (spot 4 was ~10 mm).
+MAX_FIT_SPOT_RESIDUAL_MM = 8.0
+# Fit-spot Z should match table_z_mm within this band.
+MAX_FIT_SPOT_Z_DELTA_MM = 5.0
+COLOUR_DROP_KEYS = {
+    "red_cap": ("drop_red_x_mm", "drop_red_y_mm"),
+    "black_cap": ("drop_black_x_mm", "drop_black_y_mm"),
+    "white_cap": ("drop_white_x_mm", "drop_white_y_mm"),
+}
 # Table ArUco for reliable pixel centres (DICT_4X4_50 id 0).
 ARUCO_DICTIONARY = "DICT_4X4_50"
 ARUCO_MARKER_ID = 0
@@ -59,19 +90,27 @@ SERVICE_WAIT_SECONDS = 2.0
 MOVE_TIMEOUT_SECONDS = 25.0
 GRIPPER_TIMEOUT_SECONDS = 42.0
 GRIPPER_SPEED = 15
-CLOSE_GRIPPER_SPEED = 8
+CLOSE_GRIPPER_SPEED = 15
 DESCEND_SPEED = 5
 ALIGN_SETTLE_SECONDS = 0.8
-ALIGN_TOLERANCE_MM = 4.0
+ALIGN_TOLERANCE_MM = 8.0
 ALIGN_MAX_NUDGES = 3
-ALIGN_MAX_STEP_MM = 12.0
+ALIGN_MAX_STEP_MM = 10.0
 ALIGN_FRAME_WAIT_SECONDS = 1.0
 # Wrist image axes are fixed while the tool angle stays at the
 # calibrated orientation. One millimetre scale and two signs turn a
 # pixel error into a small robot nudge.
-WRIST_MM_PER_PIXEL = 0.25
-WRIST_U_SIGN = 1.0
-WRIST_V_SIGN = 1.0
+# Robot move (dx, dy mm) for a wrist pixel error (du, dv), measured at
+# TRAVEL_Z_MM by stepping the tool 10 mm over a cap. The image axes are
+# rotated against the robot axes, so separate signs per axis walked the
+# arm away from the cap (89 px grew to 343 px on a live red pick).
+WRIST_GAIN_MM_PER_PX = ((-0.268, 0.152), (0.089, 0.313))
+# Estimated lens height above the tool point. Lower poses see the cap
+# larger, so the travel-height gain is scaled down while descending.
+WRIST_LENS_ABOVE_TIP_MM = 50.0
+# A nudge that leaves the cap this much further from the cross is
+# undone, and the descent finishes on the overview aim.
+WRIST_DIVERGE_MARGIN_PX = 12.0
 # The gripper sits on the left of this wrist mount. Cap search
 # ignores the far-left body and bright gripper plastic so pads
 # are never mistaken for a lid. The yellow cross defaults to the
@@ -79,7 +118,17 @@ WRIST_V_SIGN = 1.0
 WRIST_TARGET_U_FRAC = 0.30
 WRIST_TARGET_V_FRAC = 0.50
 WRIST_SEARCH_LEFT_FRAC = 0.18
-WRIST_MIN_CIRCULARITY = 0.65
+WRIST_MIN_CIRCULARITY = 0.72
+# A real cap fills most of its enclosing circle and stays in a
+# known size band. Glare holes are closed before this test.
+WRIST_MIN_FILL = 0.55
+WRIST_MIN_DIAMETER_PX = 36.0
+WRIST_MAX_DIAMETER_PX = 220.0
+# While a colour is locked, a blob far from that centre is ignored
+# so the ring cannot hop to a shadow or a split highlight.
+WRIST_LOCK_RADIUS_PX = 70.0
+WRIST_LOCK_BLEND = 0.35
+WRIST_LOCK_MISSES = 4
 # During the vertical approach the overview reading is only a
 # starting guess. The wrist camera recentres the cap on the
 # gripper target before each short drop.
@@ -88,29 +137,39 @@ WRIST_MAX_NUDGE_MM = 14.0
 WRIST_NUDGES_PER_STEP = 3
 WRIST_SETTLE_SECONDS = 0.25
 WRIST_MISS_LIMIT = 3
+WRIST_PREVIEW_PERIOD_SECONDS = 0.5
 # The arm stops a few millimetres short of the commanded height.
 # Closing at the bare table reading presses the pads onto the lid.
 # A few millimetres higher lets the jaws close around the wall.
 GRASP_CLEARANCE_MM = 3.0
-# Measured open-vs-closed finger diff at Spot 5: horizontal centre
-# between the left and right pads is +16.8 px from the calibrated
-# left-finger slot, and the open pads sit 10 px higher in the image
-# than the empty-closed tip arc. That maps to (-2.1, -17.5) mm so
-# the jaws come down squarely around the cap instead of behind it.
-GRASP_OFFSET_X_MM = -2.1
-GRASP_OFFSET_Y_MM = -17.5
-# Per-colour shifts stay zero. The pinch-centre offset is enough.
+# Calibration already uses the open-finger gap midpoint, so the
+# global grasp offset stays zero unless tuned for a new camera view.
+GRASP_OFFSET_X_MM = 0.0
+GRASP_OFFSET_Y_MM = 0.0
+# Seed bias before overview soft-align / grasp nudge.
+# white: right finger hit disc centre at 0,0; +12/-8 overshot sticky.
+# black: 0,0 closed on lid (jaw 95); +8 Y held (jaw 80). Use +6.
+# red: successful pick at 0,0; soft-align cleans residual.
+# Soft-align at hover + nudge at grasp close the rest each pick.
 CLASS_GRASP_OFFSET_MM = {
     "red_cap": (0.0, 0.0),
-    "white_cap": (0.0, 0.0),
-    "black_cap": (0.0, 0.0),
+    # Soft-align at travel height closes residual; these are seeds.
+    "white_cap": (10.0, -6.0),
+    # Black often lids at 0/+6; nudge further in +Y after run4 LID streak.
+    "black_cap": (0.0, 8.0),
 }
-# Soft hover align used to overshoot; take only part of each nudge.
-ALIGN_CORRECTION_GAIN = 0.55
+# Soft hover align: take most of the measured jaw-to-cap error.
+ALIGN_CORRECTION_GAIN = 0.85
 # Travel this high before moving sideways. A lower joint-space
 # move bows across the table and knocks the cap off the cross.
 TRAVEL_Z_MM = 150.0
 DESCEND_STEP_MM = 12.0
+# Park here before looking and after each pick. Over the caps or the
+# drops the arm hides caps from the overview camera.
+OBSERVE_X_MM = 130.0
+OBSERVE_Y_MM = 130.0
+OBSERVE_Z_MM = 200.0
+OBSERVE_SETTLE_SECONDS = 1.5
 # A colour fix may pull a loose box onto the disc, but it must not
 # walk off the yellow cross onto a cable or another cap.
 REFINE_MAX_PIXELS = 18.0
@@ -218,11 +277,11 @@ class PickPlace(Node):
         self.declare_parameter("use_wrist_guidance", False)
         self.declare_parameter("grasp_offset_x_mm", GRASP_OFFSET_X_MM)
         self.declare_parameter("grasp_offset_y_mm", GRASP_OFFSET_Y_MM)
-        self.declare_parameter("wrist_mm_per_pixel", WRIST_MM_PER_PIXEL)
-        self.declare_parameter("wrist_u_sign", WRIST_U_SIGN)
-        self.declare_parameter("wrist_v_sign", WRIST_V_SIGN)
         self.declare_parameter("wrist_target_u", -1.0)
         self.declare_parameter("wrist_target_v", -1.0)
+        self.declare_parameter("observe_x_mm", OBSERVE_X_MM)
+        self.declare_parameter("observe_y_mm", OBSERVE_Y_MM)
+        self.declare_parameter("observe_z_mm", OBSERVE_Z_MM)
 
         calibration_file = str(
             self.get_parameter("calibration_file").value
@@ -240,6 +299,9 @@ class PickPlace(Node):
         self._wrist_jpeg_encoded_at = 0.0
         self._wrist_frame = None
         self._wrist_frame_received = 0.0
+        self._wrist_lock = None
+        self._wrist_lock_class = None
+        self._wrist_lock_misses = 0
         self._use_wrist_guidance = bool(
             self.get_parameter("use_wrist_guidance").value
         )
@@ -249,16 +311,16 @@ class PickPlace(Node):
         self._grasp_offset_y_mm = float(
             self.get_parameter("grasp_offset_y_mm").value
         )
-        self._wrist_mm_per_pixel = float(
-            self.get_parameter("wrist_mm_per_pixel").value
-        )
-        self._wrist_u_sign = float(self.get_parameter("wrist_u_sign").value)
-        self._wrist_v_sign = float(self.get_parameter("wrist_v_sign").value)
         self._wrist_target_u = float(
             self.get_parameter("wrist_target_u").value
         )
         self._wrist_target_v = float(
             self.get_parameter("wrist_target_v").value
+        )
+        self._observe_xyz = (
+            float(self.get_parameter("observe_x_mm").value),
+            float(self.get_parameter("observe_y_mm").value),
+            float(self.get_parameter("observe_z_mm").value),
         )
         self._tool_pose = None
         self._tool_pose_received = 0.0
@@ -308,48 +370,69 @@ class PickPlace(Node):
         self._pick_class = ""
         self._server = None
         self._calibrate_page_path = _calibrate_page_path()
+        self._attempt_logger = AttemptLogger()
+        self._auto_summary = None
+        self.get_logger().info(
+            "Autonomy safety params: "
+            + ", ".join(
+                f"{key}={value}" for key, value in SAFETY_PARAMS.items()
+            )
+        )
+        self._warn_spot_residuals()
 
+        # Marking a frame costs longer than the camera period. Keep the
+        # image work off the group that carries the pose, the cap boxes
+        # and the weights flag, or those callbacks never run.
+        image_group = MutuallyExclusiveCallbackGroup()
+        state_group = MutuallyExclusiveCallbackGroup()
         self.create_subscription(
             Image,
             "/overview_camera/image_rect",
             self._on_image,
             _camera_qos(),
+            callback_group=image_group,
         )
         self.create_subscription(
             Image,
             "/wrist_camera/image_raw",
             self._on_wrist_image,
             _camera_qos(),
+            callback_group=image_group,
         )
         self.create_subscription(
             Float64MultiArray,
             "/mycobot/tool_pose_raw",
             self._on_tool_pose,
             10,
+            callback_group=state_group,
         )
         self.create_subscription(
             JointState,
             "joint_states",
             self._on_joint_states,
             10,
+            callback_group=state_group,
         )
         self.create_subscription(
             Bool,
             "/overview_camera/yolo/model_ready",
             self._on_model_ready,
             _ready_qos(),
+            callback_group=state_group,
         )
         self.create_subscription(
             CameraInfo,
             "/overview_camera/camera_info",
             self._on_camera_info,
             _camera_qos(),
+            callback_group=state_group,
         )
         self.create_subscription(
             Detection2DArray,
             "/overview_camera/yolo/detections",
             self._on_detections,
             10,
+            callback_group=state_group,
         )
         self._coords_client = self.create_client(
             MoveCoords,
@@ -454,6 +537,8 @@ class PickPlace(Node):
             "busy": self._busy,
             "preview": self._preview_payload(detection),
             "wizard": self.wizard_payload(),
+            "safety_params": dict(SAFETY_PARAMS),
+            "auto_task": getattr(self, "_auto_summary", None),
         }
 
     def calibrate_page_bytes(self):
@@ -671,16 +756,38 @@ class PickPlace(Node):
             "wizard": self.wizard_payload(),
         }
 
-    def capture_drop(self):
-        """Save the current tool XY as the drop point. No motion."""
+    def capture_drop(self, class_name=None):
+        """Save the current tool XY as shared or per-colour drop. No motion."""
         pose = self._fresh_tool_pose()
         if pose is None:
             return _error_payload(
                 "No fresh /mycobot/tool_pose_raw reading."
             )
+        chosen = None
+        if class_name:
+            chosen = _cap_class(class_name)
+            if chosen is None:
+                return _error_payload(
+                    "Drop colour must be red_cap, white_cap, or black_cap."
+                )
         with self._lock:
-            self._wizard["drop_x_mm"] = round(pose[0], 2)
-            self._wizard["drop_y_mm"] = round(pose[1], 2)
+            if chosen is None:
+                self._wizard["drop_x_mm"] = round(pose[0], 2)
+                self._wizard["drop_y_mm"] = round(pose[1], 2)
+                message = (
+                    "Shared drop position saved from the current tool pose. "
+                    "The arm was not moved."
+                )
+            else:
+                x_key, y_key = COLOUR_DROP_KEYS[chosen]
+                self._wizard[x_key] = round(pose[0], 2)
+                self._wizard[y_key] = round(pose[1], 2)
+                label = CAP_CLASSES[chosen]
+                message = (
+                    f"{label.capitalize()} drop saved at "
+                    f"{pose[0]:.1f}, {pose[1]:.1f} mm. "
+                    "The arm was not moved."
+                )
             self._wizard["accepted"] = False
             self._store_wizard(accepted=False)
             self._calibration = None
@@ -690,10 +797,7 @@ class PickPlace(Node):
             )
         return 200, {
             "success": True,
-            "message": (
-                "Drop position saved from the current tool pose. "
-                "The arm was not moved."
-            ),
+            "message": message,
             "wizard": self.wizard_payload(),
         }
 
@@ -784,6 +888,28 @@ class PickPlace(Node):
                 f"{error_mm:.1f} mm. Remeasure spots before accepting "
                 f"(limit {MAX_ACCEPT_CHECK_ERROR_MM:.0f} mm)."
             )
+        residuals = pair_fit_residuals(
+            calibration["pairs"],
+            lambda u, v: project_table(mapping, u, v),
+        )
+        table_z = float(calibration["table_z_mm"])
+        for row in residuals:
+            if row["error_mm"] > MAX_FIT_SPOT_RESIDUAL_MM:
+                return _error_payload(
+                    f"Fit spot {row['index']} residual "
+                    f"{row['error_mm']:.1f} mm exceeds "
+                    f"{MAX_FIT_SPOT_RESIDUAL_MM:.0f} mm. "
+                    f"Remake that spot at table z ≈ {table_z:.0f} mm "
+                    "(open fingers on the mark), then Accept again."
+                )
+            z_val = row.get("z_mm")
+            if z_val is not None and abs(float(z_val) - table_z) > MAX_FIT_SPOT_Z_DELTA_MM:
+                return _error_payload(
+                    f"Fit spot {row['index']} z={float(z_val):.1f} mm "
+                    f"is more than {MAX_FIT_SPOT_Z_DELTA_MM:.0f} mm from "
+                    f"table_z {table_z:.0f} mm. Remake that spot tip-down "
+                    "on the table before accepting."
+                )
         with self._lock:
             self._wizard["accepted"] = True
             self._wizard.update(
@@ -792,6 +918,12 @@ class PickPlace(Node):
                     "hover_mm": calibration["hover_mm"],
                     "drop_x_mm": calibration["drop_x_mm"],
                     "drop_y_mm": calibration["drop_y_mm"],
+                    "drop_red_x_mm": calibration.get("drop_red_x_mm"),
+                    "drop_red_y_mm": calibration.get("drop_red_y_mm"),
+                    "drop_black_x_mm": calibration.get("drop_black_x_mm"),
+                    "drop_black_y_mm": calibration.get("drop_black_y_mm"),
+                    "drop_white_x_mm": calibration.get("drop_white_x_mm"),
+                    "drop_white_y_mm": calibration.get("drop_white_y_mm"),
                     "tool_rx": calibration["tool_rx"],
                     "tool_ry": calibration["tool_ry"],
                     "tool_rz": calibration["tool_rz"],
@@ -827,6 +959,12 @@ class PickPlace(Node):
                 "hover_mm": self._wizard.get("hover_mm"),
                 "drop_x_mm": self._wizard.get("drop_x_mm"),
                 "drop_y_mm": self._wizard.get("drop_y_mm"),
+                "drop_red_x_mm": self._wizard.get("drop_red_x_mm"),
+                "drop_red_y_mm": self._wizard.get("drop_red_y_mm"),
+                "drop_black_x_mm": self._wizard.get("drop_black_x_mm"),
+                "drop_black_y_mm": self._wizard.get("drop_black_y_mm"),
+                "drop_white_x_mm": self._wizard.get("drop_white_x_mm"),
+                "drop_white_y_mm": self._wizard.get("drop_white_y_mm"),
             }
             pose = None if self._tool_pose is None else list(self._tool_pose)
             pose_age = None
@@ -850,6 +988,12 @@ class PickPlace(Node):
             "hover_mm": wizard["hover_mm"],
             "drop_x_mm": wizard["drop_x_mm"],
             "drop_y_mm": wizard["drop_y_mm"],
+            "drop_red_x_mm": wizard.get("drop_red_x_mm"),
+            "drop_red_y_mm": wizard.get("drop_red_y_mm"),
+            "drop_black_x_mm": wizard.get("drop_black_x_mm"),
+            "drop_black_y_mm": wizard.get("drop_black_y_mm"),
+            "drop_white_x_mm": wizard.get("drop_white_x_mm"),
+            "drop_white_y_mm": wizard.get("drop_white_y_mm"),
             "tool_pose_mm": None if pose is None else [
                 round(pose[0], 2),
                 round(pose[1], 2),
@@ -865,10 +1009,6 @@ class PickPlace(Node):
         if chosen is None:
             return _error_payload("Choose the red, white, or black cap.")
         label = CAP_CLASSES[chosen]
-        if self._fresh_detection(chosen) is None:
-            return _error_payload(
-                f"The {label} cap is not in view. The arm was not moved."
-            )
         if not self._wizard.get("accepted"):
             return _error_payload(
                 "Calibration is still a preview. Picking is disabled."
@@ -880,6 +1020,7 @@ class PickPlace(Node):
         if not self._motion_lock.acquire(blocking=False):
             return _error_payload("A pick is already running", 409)
         self._busy = True
+        self._auto_summary = None
         try:
             initial = self._fresh_tool_pose()
             if initial is None:
@@ -887,10 +1028,19 @@ class PickPlace(Node):
                     "No fresh tool pose. Wait until the arm "
                     "is reporting its position."
                 )
-            self._initial_pose = list(initial)
+            status, body = self._go_observe()
+            if status != 200 or not body.get("success"):
+                return status, body
+            self._initial_pose = self._observe_pose()
+            if self._wait_for_detection(chosen) is None:
+                return _error_payload(
+                    f"The {label} cap is not in view from the parking pose."
+                )
             self._pick_class = chosen
-            status, body = self._run_pick()
+            track = CapTrack(class_name=chosen)
+            status, body = self._run_pick_with_retries(track)
             if status == 200 and body.get("success"):
+                self._go_observe()
                 return status, body
             if _stopped_by_user(body):
                 return status, body
@@ -899,10 +1049,268 @@ class PickPlace(Node):
             self._busy = False
             self._motion_lock.release()
 
-    def _run_pick(self):
-        """Open above the cap, lower straight, then lift before travel."""
-        label = CAP_CLASSES.get(self._pick_class, "chosen")
-        center = self._stable_cap_center(self._pick_class)
+    def pick_all(self):
+        """Pick every locked colour once (bounded retries per colour)."""
+        if not self._wizard.get("accepted"):
+            return _error_payload(
+                "Calibration is still a preview. Picking is disabled."
+            )
+        if not self._weights_ready:
+            return _error_payload(self._weights_message)
+        if self._mapping is None or self._calibration is None:
+            return _error_payload(self._mapping_error)
+        if not self._motion_lock.acquire(blocking=False):
+            return _error_payload("A pick is already running", 409)
+        self._busy = True
+        manager = TaskManager()
+        self._auto_summary = manager.summary()
+        try:
+            initial = self._fresh_tool_pose()
+            if initial is None:
+                return _error_payload(
+                    "No fresh tool pose. Wait until the arm "
+                    "is reporting its position."
+                )
+            status, body = self._go_observe()
+            if status != 200 or not body.get("success"):
+                return status, body
+            self._initial_pose = self._observe_pose()
+            reports = []
+            idle_passes = 0
+            while True:
+                detections = self._detections_with_xy()
+                manager.update_from_detections(detections)
+                self._auto_summary = manager.summary()
+                track = manager.select_next()
+                if track is None:
+                    break
+                self._pick_class = track.class_name
+                label = CAP_CLASSES.get(track.class_name, track.class_name)
+                self.get_logger().info(
+                    f"Auto pick selecting {label} "
+                    f"(attempt {track.attempts + 1})"
+                )
+                before_attempts = int(track.attempts)
+                status, body = self._run_pick_with_retries(track, manager)
+                if len(reports) < 40:
+                    reports.append(
+                        {
+                            "class_name": track.class_name,
+                            "success": bool(body.get("success")),
+                            "message": body.get("message"),
+                            "status": track.status,
+                            "attempts": track.attempts,
+                            "last_failure": track.last_failure,
+                        }
+                    )
+                if _stopped_by_user(body):
+                    manager.finished = True
+                    manager.message = body.get("message", "Stopped.")
+                    break
+                self._go_observe()
+                if int(track.attempts) <= before_attempts and not body.get(
+                    "success"
+                ):
+                    idle_passes += 1
+                    if idle_passes >= 6:
+                        manager.finished = True
+                        manager.message = (
+                            "Auto pick stopped: no grasp progress "
+                            "(caps not visible or unworkable)."
+                        )
+                        break
+                else:
+                    idle_passes = 0
+                self._auto_summary = manager.summary()
+            summary = manager.summary()
+            self._auto_summary = summary
+            completed = sum(
+                1
+                for track in manager.tracks.values()
+                if track.status == "COMPLETED"
+            )
+            message = summary.get("message") or (
+                f"Auto pick finished. Completed {completed} colour(s)."
+            )
+            return 200, {
+                "success": completed > 0,
+                "message": message,
+                "completed": completed,
+                "reports": reports,
+                "auto_task": summary,
+            }
+        finally:
+            self._busy = False
+            self._motion_lock.release()
+
+    def _detections_with_xy(self):
+        """Return fresh detections with projected robot XY."""
+        found = {}
+        for name, detection in self._visible_detections().items():
+            row = dict(detection)
+            if self._mapping is not None:
+                x_mm, y_mm = project_table(
+                    self._mapping,
+                    float(row["u"]),
+                    float(row["v"]),
+                )
+                row["x_mm"] = x_mm
+                row["y_mm"] = y_mm
+            found[name] = row
+        return found
+
+    def _run_pick_with_retries(self, track, manager=None):
+        """Bounded adaptive retries for one colour."""
+        label = CAP_CLASSES.get(track.class_name, "chosen")
+        last_status, last_body = _error_payload(
+            f"No attempt ran for the {label} cap."
+        )
+        candidate_delta = (0.0, 0.0)
+        while track.attempts < MAX_ATTEMPTS_PER_CAP:
+            if manager is not None:
+                limit = manager.limits_hit()
+                if limit:
+                    manager.finished = True
+                    manager.message = limit
+                    return _error_payload(limit)
+            live = self._fresh_detection(track.class_name)
+            if live is None:
+                # Drop stale XY so select_next will not re-pick this colour
+                # until the overview locks it again.
+                track.status = "PENDING"
+                track.x_mm = None
+                track.y_mm = None
+                track.last_message = "Cap not visible for retry."
+                track.last_failure = "UNKNOWN"
+                return _error_payload(
+                    f"The {label} cap is not in view for another try."
+                )
+            age = float(live.get("age_seconds") or 0.0)
+            if age > float(SAFETY_PARAMS["stale_detection_seconds"]):
+                return _error_payload(
+                    f"Stale {label} lock ({age:.1f} s). Refusing pick."
+                )
+            if manager is not None:
+                manager.mark_attempt(track)
+            else:
+                track.attempts += 1
+            track.status = "APPROACHING"
+            status, body = self._run_pick_stages(
+                track,
+                candidate_delta,
+            )
+            last_status, last_body = status, body
+            if _stopped_by_user(body):
+                return status, body
+            outcome = body.get("grasp_outcome") or (
+                "SUCCESS" if body.get("success") else "UNKNOWN"
+            )
+            self._attempt_logger.log(
+                {
+                    "class_name": track.class_name,
+                    "attempt": track.attempts,
+                    "outcome": outcome,
+                    "candidate_delta_mm": list(candidate_delta),
+                    "x_mm": body.get("grasp_x_mm"),
+                    "y_mm": body.get("grasp_y_mm"),
+                    "jaw": body.get("final_value"),
+                    "message": body.get("message"),
+                    "place_verify": body.get("place_verify"),
+                }
+            )
+            if outcome == "SUCCESS" and body.get("success"):
+                if manager is not None:
+                    manager.mark_success(track, body.get("message", ""))
+                else:
+                    track.status = "COMPLETED"
+                return status, body
+            # Grasp held but place failed: do not burn XY candidates.
+            if body.get("grasp_held") and not body.get("success"):
+                track.last_failure = "PLACE_FAILURE"
+                track.last_message = str(body.get("message") or "Place failed")
+                if manager is not None:
+                    manager.mark_failure(
+                        track, "PLACE_FAILURE", track.last_message
+                    )
+                else:
+                    track.status = "FAILED"
+                return status, body
+            grasp_x = body.get("grasp_x_mm")
+            grasp_y = body.get("grasp_y_mm")
+            if grasp_x is not None and grasp_y is not None:
+                remember_failed_xy(track, grasp_x, grasp_y)
+            track.last_failure = outcome
+            track.last_message = str(body.get("message") or outcome)
+            if manager is not None:
+                manager.mark_failure(track, outcome, track.last_message)
+            else:
+                if track.attempts >= MAX_ATTEMPTS_PER_CAP:
+                    track.status = "SKIPPED"
+                else:
+                    track.status = "RETRY"
+            # Retreat / open, then park so the arm does not hide the cap.
+            self._retreat_after_fail()
+            self._go_observe()
+            fresh = self._wait_for_detection(track.class_name)
+            if fresh is None:
+                last_body["message"] = (
+                    track.last_message
+                    + f" Cap left view after attempt {track.attempts}."
+                )
+                break
+            # Cap moved: use new detection only (no candidate shift).
+            if track.u is not None and track.v is not None:
+                if not pixel_near(track.u, track.v, fresh["u"], fresh["v"]):
+                    candidate_delta = (0.0, 0.0)
+                    track.u = float(fresh["u"])
+                    track.v = float(fresh["v"])
+                    self.get_logger().info(
+                        f"{label} moved on the table; "
+                        "retrying from the new lock."
+                    )
+                    continue
+            track.u = float(fresh["u"])
+            track.v = float(fresh["v"])
+            nxt = next_candidate(track, outcome)
+            if nxt is None:
+                last_body["message"] = (
+                    track.last_message
+                    + " No unused XY candidates left."
+                )
+                break
+            candidate_delta = nxt
+            self.get_logger().info(
+                f"Retry {label} with XY delta "
+                f"{candidate_delta[0]:+.1f}, {candidate_delta[1]:+.1f} mm "
+                f"after {outcome}"
+            )
+        return last_status, last_body
+
+    def _retreat_after_fail(self):
+        """Open jaws and lift before the next observe/retry."""
+        if self._calibration is None:
+            self._set_gripper(0)
+            return
+        orientation = (
+            self._calibration["tool_rx"],
+            self._calibration["tool_ry"],
+            self._calibration["tool_rz"],
+        )
+        speed = self._calibration["speed"]
+        self._set_gripper(0)
+        pose = self._fresh_tool_pose()
+        if pose is not None and pose[2] < TRAVEL_Z_MM - 5.0:
+            self._move_to(
+                (pose[0], pose[1], TRAVEL_Z_MM),
+                orientation,
+                speed,
+            )
+
+    def _run_pick_stages(self, track, candidate_delta=(0.0, 0.0)):
+        """Approach, align, descend, close, lift, place for one attempt."""
+        self._pick_class = track.class_name
+        label = CAP_CLASSES.get(track.class_name, "chosen")
+        center = self._stable_cap_center(track.class_name)
         if center is None:
             return _error_payload(
                 f"No steady view of the {label} cap. "
@@ -916,61 +1324,222 @@ class PickPlace(Node):
             self._calibration["tool_rz"],
         )
         speed = self._calibration["speed"]
-        drop_x = self._calibration["drop_x_mm"]
-        drop_y = self._calibration["drop_y_mm"]
         x_mm, y_mm = center[0], center[1]
-        offset_x, offset_y = self._grasp_offsets(self._pick_class)
-        x_mm += offset_x
-        y_mm += offset_y
-        status, body = self._raise_for_travel(orientation, speed)
+        aim_u, aim_v = float(center[2]), float(center[3])
+        track.u, track.v = aim_u, aim_v
+        seed = self._fresh_detection(track.class_name) or {}
+        aim_w = float(seed.get("size_x") or 36.0)
+        aim_h = float(seed.get("size_y") or 36.0)
+        offset_x, offset_y = self._grasp_offsets(track.class_name)
+        x_mm += offset_x + float(candidate_delta[0])
+        y_mm += offset_y + float(candidate_delta[1])
+        if not in_workspace(x_mm, y_mm):
+            return _error_payload(
+                f"Target {x_mm:.1f}, {y_mm:.1f} mm is outside "
+                "the workspace box."
+            )
+        if xy_already_failed(track, x_mm, y_mm):
+            return _error_payload(
+                f"Refusing to repeat failed XY "
+                f"{x_mm:.1f}, {y_mm:.1f} mm."
+            )
+
+        # --- approach ---
+        track.status = "APPROACHING"
+        status, body = self._stage_approach(orientation, speed, x_mm, y_mm)
         if status != 200 or not body.get("success"):
+            body["grasp_outcome"] = "UNKNOWN"
+            body["grasp_x_mm"] = round(x_mm, 1)
+            body["grasp_y_mm"] = round(y_mm, 1)
             return status, body
+        x_mm, y_mm = self._confirm_cap_target(
+            x_mm, y_mm, TRAVEL_Z_MM, orientation, speed,
+        )
+        live = self._fresh_detection(track.class_name)
+        if live is not None:
+            age = float(live.get("age_seconds") or 0.0)
+            if age > float(SAFETY_PARAMS["stale_detection_seconds"]):
+                return _error_payload(
+                    f"Stale lock after approach ({age:.1f} s)."
+                )
+            aim_u = float(live["u"])
+            aim_v = float(live["v"])
+            aim_w = float(live.get("size_x") or aim_w)
+            aim_h = float(live.get("size_y") or aim_h)
+            track.u, track.v = aim_u, aim_v
+
+        # --- align ---
+        track.status = "ALIGNING"
+        x_mm, y_mm = self._soft_align_at_hover(
+            x_mm, y_mm, TRAVEL_Z_MM, orientation,
+            aim_u, aim_v, aim_w, aim_h,
+        )
+        if not in_workspace(x_mm, y_mm):
+            return _error_payload(
+                f"Aligned target left the workspace "
+                f"({x_mm:.1f}, {y_mm:.1f} mm)."
+            )
+
+        # --- descend ---
+        track.status = "GRASPING"
+        wrist_guided = False
+        if self._use_wrist_guidance:
+            status, body, x_mm, y_mm = self._wrist_guided_descend(
+                x_mm,
+                y_mm,
+                TRAVEL_Z_MM,
+                grasp_z,
+                orientation,
+                track.class_name,
+            )
+            wrist_guided = bool(body.get("wrist_guided"))
+        else:
+            status, body = self._perform(
+                "Lower straight around the cap",
+                (x_mm, y_mm, grasp_z),
+                None,
+                orientation,
+                DESCEND_SPEED,
+            )
+        if status != 200 or not body.get("success"):
+            body["grasp_outcome"] = "UNKNOWN"
+            body["grasp_x_mm"] = round(x_mm, 1)
+            body["grasp_y_mm"] = round(y_mm, 1)
+            return status, body
+        if not wrist_guided:
+            x_mm, y_mm = self._nudge_at_grasp(
+                x_mm, y_mm, aim_u, aim_v, grasp_z, orientation, aim_w, aim_h,
+            )
+
+        # --- close ---
         status, body = self._perform(
-            "Open gripper",
+            "Close gripper",
             None,
-            0,
+            1,
             orientation,
             speed,
+            CLOSE_GRIPPER_SPEED,
         )
-        if status != 200 or not body.get("success"):
+        self.get_logger().info(
+            "Close finished with jaw "
+            f"{body.get('final_value')}: {body.get('message')}"
+        )
+        outcome = classify_grasp(body.get("final_value"))
+        body["grasp_outcome"] = outcome
+        body["grasp_x_mm"] = round(x_mm, 1)
+        body["grasp_y_mm"] = round(y_mm, 1)
+        if outcome != "SUCCESS":
+            body["success"] = False
+            body["message"] = (
+                f"Grasp {outcome} (jaw {body.get('final_value')}). "
+                + str(body.get("message", ""))
+            ).strip()
             return status, body
+
+        # --- lift ---
         status, body = self._perform(
-            "Move above the cap",
+            "Lift the object",
             (x_mm, y_mm, TRAVEL_Z_MM),
             None,
             orientation,
             speed,
         )
         if status != 200 or not body.get("success"):
+            body["grasp_outcome"] = "UNKNOWN"
+            body["grasp_x_mm"] = round(x_mm, 1)
+            body["grasp_y_mm"] = round(y_mm, 1)
             return status, body
-        # One re-aim is allowed only while the fingers are still high.
-        x_mm, y_mm = self._confirm_cap_target(
-            x_mm,
-            y_mm,
-            TRAVEL_Z_MM,
+
+        # Jaw can report a hold while the disc never left the table.
+        # Check overview before spending a place cycle.
+        left = self._verify_cap_left_grasp(
+            track.class_name, aim_u, aim_v,
+        )
+        if left == "FAILURE":
+            body["success"] = False
+            body["grasp_outcome"] = "FAILURE_EMPTY"
+            body["message"] = (
+                "Grasp looked held but the cap is still at the pick spot."
+            )
+            body["grasp_x_mm"] = round(x_mm, 1)
+            body["grasp_y_mm"] = round(y_mm, 1)
+            body["final_value"] = body.get("final_value")
+            return status, body
+
+        # --- place + verify ---
+        track.status = "PLACING"
+        status, body = self._place_cap(
+            track.class_name,
+            grasp_z,
             orientation,
             speed,
+            grasp_u=aim_u,
+            grasp_v=aim_v,
         )
-        self.get_logger().info(
-            "Holding above the measured cap centre "
-            f"{x_mm:.1f}, {y_mm:.1f} mm"
+        body["grasp_held"] = True
+        body["grasp_outcome"] = (
+            "SUCCESS" if body.get("success") else "PLACE_FAILURE"
         )
-        self.get_logger().info(
-            f"Grasp height is {grasp_z:.1f} mm, "
-            f"{GRASP_CLEARANCE_MM:.0f} mm above the table reading."
-        )
+        body["grasp_x_mm"] = round(x_mm, 1)
+        body["grasp_y_mm"] = round(y_mm, 1)
+        return status, body
+
+    def _stage_approach(self, orientation, speed, x_mm, y_mm):
+        """Raise, open, and move above the aim XY."""
+        status, body = self._raise_for_travel(orientation, speed)
+        if status != 200 or not body.get("success"):
+            return status, body
         status, body = self._perform(
-            "Lower straight around the cap",
-            (x_mm, y_mm, grasp_z),
-            None,
-            orientation,
-            DESCEND_SPEED,
+            "Open gripper", None, 0, orientation, speed,
         )
         if status != 200 or not body.get("success"):
             return status, body
+        return self._perform(
+            "Move above the cap",
+            (x_mm, y_mm, TRAVEL_Z_MM),
+            None,
+            orientation,
+            speed,
+        )
+
+    def _drop_xy_for_class(self, class_name):
+        """Per-colour drop, falling back to the shared drop pose."""
+        keys = COLOUR_DROP_KEYS.get(class_name)
+        calib = self._calibration or {}
+        wizard = self._wizard or {}
+        if keys is not None:
+            x_key, y_key = keys
+            x_val = calib.get(x_key, wizard.get(x_key))
+            y_val = calib.get(y_key, wizard.get(y_key))
+            if x_val is not None and y_val is not None:
+                return self._clamp_drop_xy(float(x_val), float(y_val))
+        return self._clamp_drop_xy(
+            float(calib["drop_x_mm"]), float(calib["drop_y_mm"])
+        )
+
+    def _clamp_drop_xy(self, x_mm, y_mm):
+        """Keep drop poses inside the firmware-safe workspace box."""
+        max_x = float(SAFETY_PARAMS["coord_max_x_mm"])
+        min_x = float(SAFETY_PARAMS["coord_min_x_mm"])
+        max_y = float(SAFETY_PARAMS["coord_max_y_mm"])
+        min_y = float(SAFETY_PARAMS["coord_min_y_mm"])
+        return (
+            min(max(float(x_mm), min_x), max_x),
+            min(max(float(y_mm), min_y), max_y),
+        )
+
+    def _place_cap(
+        self,
+        class_name,
+        grasp_z,
+        orientation,
+        speed,
+        grasp_u=None,
+        grasp_v=None,
+    ):
+        """Carry to the colour drop, open, and verify the cap left."""
+        drop_x, drop_y = self._drop_xy_for_class(class_name)
         steps = (
-            ("Close gripper", None, 1, speed),
-            ("Lift the object", (x_mm, y_mm, TRAVEL_Z_MM), None, speed),
             (
                 "Move above the drop",
                 (drop_x, drop_y, TRAVEL_Z_MM),
@@ -986,39 +1555,147 @@ class PickPlace(Node):
             ("Open gripper", None, 0, speed),
             ("Lift clear", (drop_x, drop_y, TRAVEL_Z_MM), None, speed),
         )
+        open_jaw = None
+        last_body = {"success": True, "message": "Placed"}
         for name, point, gripper_state, step_speed in steps:
-            close_speed = (
-                CLOSE_GRIPPER_SPEED if gripper_state == 1 else None
-            )
             status, body = self._perform(
-                name,
-                point,
-                gripper_state,
-                orientation,
-                step_speed,
-                close_speed,
+                name, point, gripper_state, orientation, step_speed,
             )
-            if gripper_state == 1:
-                # A slow close often times out while the jaw is already
-                # on the cap. The reading decides, not the service flag.
-                self.get_logger().info(
-                    "Close finished with jaw "
-                    f"{body.get('final_value')}: {body.get('message')}"
-                )
-                if _jaw_is_holding(body):
-                    continue
-                body["success"] = False
-                body["message"] = (
-                    "Gripper closed without the cap. "
-                    + str(body.get("message", ""))
-                ).strip()
-                return status, body
+            last_body = body
+            if name == "Open gripper":
+                open_jaw = body.get("final_value")
             if status != 200 or not body.get("success"):
                 return status, body
+        # Placement verify: jaws should read empty after open.
+        verify = self._verify_place_empty(open_jaw)
+        if verify == "FAILURE":
+            return _error_payload(
+                "Place verify failed: jaws still look occupied."
+            )
+        # Overview check: colour must not still sit at the grasp pixel.
+        left = self._verify_cap_left_grasp(
+            class_name, grasp_u, grasp_v,
+        )
+        if left == "FAILURE":
+            return _error_payload(
+                "Place verify failed: cap still near the pick spot."
+            )
+        place_verify = verify
+        if left == "UNKNOWN" and verify == "EMPTY":
+            place_verify = "EMPTY"
+        elif left == "UNKNOWN":
+            place_verify = "UNKNOWN" if verify == "UNKNOWN" else verify
+        elif verify == "UNKNOWN":
+            place_verify = "LEFT_PICK"
+        message = "Pick and place completed"
+        if place_verify == "UNKNOWN":
+            message += " (place verify UNKNOWN; jaw not conclusive)."
         return 200, {
             "success": True,
-            "message": "Pick and place completed",
+            "message": message,
+            "place_verify": place_verify,
+            "final_value": open_jaw,
         }
+
+    def _verify_place_empty(self, open_jaw=None):
+        """Return EMPTY, FAILURE, or UNKNOWN after the drop open."""
+        value = open_jaw
+        if not isinstance(value, int) or value < 0:
+            _status, body = self._set_gripper(0)
+            value = body.get("final_value")
+        if not isinstance(value, int) or value < 0:
+            return "UNKNOWN"
+        if value <= 10 or value >= 90:
+            return "EMPTY"
+        if 12 <= value <= 86:
+            return "FAILURE"
+        return "UNKNOWN"
+
+    def _verify_cap_left_grasp(self, class_name, grasp_u, grasp_v):
+        """Confirm the colour is no longer at the grasp pixel."""
+        if grasp_u is None or grasp_v is None:
+            return "UNKNOWN"
+        time.sleep(0.45)
+        live = self._fresh_detection(class_name)
+        if live is None:
+            return "LEFT"
+        if pixel_near(grasp_u, grasp_v, live["u"], live["v"]):
+            return "FAILURE"
+        return "LEFT"
+
+    def _warn_spot_residuals(self):
+        """Log fit-spot residuals so spot 4 remakes are obvious."""
+        pairs = list((self._wizard or {}).get("pairs") or [])
+        if len(pairs) < 3 or self._mapping is None:
+            return
+        rows = pair_fit_residuals(
+            pairs,
+            lambda u, v: project_table(self._mapping, u, v),
+        )
+        table_z = self._wizard.get("table_z_mm")
+        for row in rows:
+            msg = (
+                f"Fit spot {row['index']} residual "
+                f"{row['error_mm']:.1f} mm"
+            )
+            z_val = row.get("z_mm")
+            if table_z is not None and z_val is not None:
+                delta = abs(float(z_val) - float(table_z))
+                msg += f", z delta {delta:.1f} mm"
+            if row["error_mm"] > MAX_FIT_SPOT_RESIDUAL_MM:
+                self.get_logger().warn(
+                    msg
+                    + f". Remake at table z ≈ {table_z} mm "
+                    f"(limit {MAX_FIT_SPOT_RESIDUAL_MM:.0f} mm)."
+                )
+            else:
+                self.get_logger().info(msg)
+
+    def _observe_pose(self):
+        """Return the parking pose with the calibrated tool angle."""
+        return [
+            self._observe_xyz[0],
+            self._observe_xyz[1],
+            self._observe_xyz[2],
+            float(self._calibration["tool_rx"]),
+            float(self._calibration["tool_ry"]),
+            float(self._calibration["tool_rz"]),
+        ]
+
+    def _go_observe(self):
+        """Lift, then park where the overview camera sees every cap."""
+        if self._calibration is None:
+            return _error_payload(self._mapping_error or "Not calibrated.")
+        orientation = (
+            self._calibration["tool_rx"],
+            self._calibration["tool_ry"],
+            self._calibration["tool_rz"],
+        )
+        speed = self._calibration["speed"]
+        status, body = self._raise_for_travel(orientation, speed)
+        if status != 200 or not body.get("success"):
+            return status, body
+        status, body = self._perform(
+            "Park clear of the overview camera",
+            self._observe_xyz,
+            None,
+            orientation,
+            speed,
+        )
+        if status == 200 and body.get("success"):
+            time.sleep(OBSERVE_SETTLE_SECONDS)
+        return status, body
+
+    def _wait_for_detection(self, class_name, timeout_seconds=6.0):
+        """Return a fresh box for one colour, waiting briefly for it."""
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            detection = self._fresh_detection(class_name)
+            if detection is not None:
+                return detection
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.1)
 
     def _raise_for_travel(self, orientation, speed):
         """Lift straight up before a sideways move."""
@@ -1080,17 +1757,27 @@ class PickPlace(Node):
         height = float(start_z)
         misses = 0
         guided = False
+        abandoned = False
         while True:
-            status, body, x_mm, y_mm, saw_cap = self._wrist_recenter(
-                x_mm,
-                y_mm,
-                height,
-                orientation,
-                class_name,
-            )
-            if status != 200 or not body.get("success"):
-                return status, body, x_mm, y_mm
-            if saw_cap:
+            if abandoned:
+                saw_cap = None
+            else:
+                status, body, x_mm, y_mm, saw_cap = self._wrist_recenter(
+                    x_mm,
+                    y_mm,
+                    height,
+                    orientation,
+                    class_name,
+                )
+                if status != 200 or not body.get("success"):
+                    return status, body, x_mm, y_mm
+                if body.get("wrist_diverged"):
+                    abandoned = True
+                    guided = False
+                    saw_cap = None
+            if saw_cap is None:
+                pass
+            elif saw_cap:
                 guided = True
                 misses = 0
             else:
@@ -1125,7 +1812,7 @@ class PickPlace(Node):
                 "Wrist descent finished at "
                 f"{pose[0]:.1f}, {pose[1]:.1f}, {pose[2]:.1f} mm"
             )
-        return 200, {"success": True}, x_mm, y_mm
+        return 200, {"success": True, "wrist_guided": guided}, x_mm, y_mm
 
     def _wrist_recenter(
         self,
@@ -1135,13 +1822,19 @@ class PickPlace(Node):
         orientation,
         class_name,
     ):
-        """Nudge X-Y until the wrist grasp point sits on the cap."""
+        """Nudge X-Y until the wrist grasp point sits on the cap.
+
+        Every nudge is checked by the next frame. A nudge that leaves the
+        cap further away is undone and body["wrist_diverged"] is set.
+        """
         saw_cap = False
-        for _attempt in range(WRIST_NUDGES_PER_STEP):
+        previous_error = None
+        before_x, before_y = x_mm, y_mm
+        for attempt in range(WRIST_NUDGES_PER_STEP + 1):
             frame = self._wait_for_wrist_frame()
             if frame is None:
                 return 200, {"success": True}, x_mm, y_mm, saw_cap
-            center = wrist_cap_center(frame, class_name)
+            center = self._track_wrist_center(frame, class_name, blend=False)
             if center is None:
                 return 200, {"success": True}, x_mm, y_mm, saw_cap
             saw_cap = True
@@ -1158,14 +1851,43 @@ class PickPlace(Node):
                 f"{error_px:.1f} px from the grasp point "
                 f"({error_u:.1f}, {error_v:.1f})."
             )
+            if (
+                previous_error is not None
+                and error_px > previous_error + WRIST_DIVERGE_MARGIN_PX
+            ):
+                self.get_logger().warning(
+                    "Wrist nudge moved the cap away "
+                    f"({previous_error:.0f} px to {error_px:.0f} px). "
+                    "Undoing it and finishing on the overview aim."
+                )
+                status, body = self._perform(
+                    "Undo the wrist nudge",
+                    (before_x, before_y, height_z),
+                    None,
+                    orientation,
+                    DESCEND_SPEED,
+                )
+                if status != 200 or not body.get("success"):
+                    return status, body, x_mm, y_mm, True
+                return (
+                    200,
+                    {"success": True, "wrist_diverged": True},
+                    before_x,
+                    before_y,
+                    False,
+                )
             if error_px <= WRIST_ALIGN_TOLERANCE_PX:
                 return 200, {"success": True}, x_mm, y_mm, True
-            shift_x = (
-                self._wrist_u_sign * error_u * self._wrist_mm_per_pixel
+            if attempt == WRIST_NUDGES_PER_STEP:
+                break
+            previous_error = error_px
+            before_x, before_y = x_mm, y_mm
+            scale = _wrist_gain_scale(
+                height_z, float(self._calibration["table_z_mm"]),
             )
-            shift_y = (
-                self._wrist_v_sign * error_v * self._wrist_mm_per_pixel
-            )
+            gain = WRIST_GAIN_MM_PER_PX
+            shift_x = scale * (gain[0][0] * error_u + gain[0][1] * error_v)
+            shift_y = scale * (gain[1][0] * error_u + gain[1][1] * error_v)
             shift_x, shift_y = _limited_shift(
                 shift_x,
                 shift_y,
@@ -1205,12 +1927,14 @@ class PickPlace(Node):
         """Average several views of one cap colour before the arm moves."""
         samples = []
         seen = set()
-        deadline = time.monotonic() + 4.0
+        started = time.monotonic()
+        # The overview detector runs below 1 frame per second on the Jetson.
+        deadline = started + 8.0
         while len(samples) < 5 and time.monotonic() < deadline:
             detection = self._fresh_detection(class_name)
             if detection is not None:
                 stamp = detection.get("received")
-                if stamp not in seen:
+                if stamp not in seen and stamp >= started:
                     seen.add(stamp)
                     with self._lock:
                         frame = (
@@ -1335,48 +2059,56 @@ class PickPlace(Node):
         y_mm,
         hover_z,
         orientation,
+        aim_u=0.0,
+        aim_v=0.0,
+        aim_w=36.0,
+        aim_h=36.0,
     ):
-        """Nudge at hover so the visible jaws sit on the cap centre.
+        """Nudge so the open jaws sit on the remembered cap centre.
 
-        Never aborts the pick: if the overview cannot see the gripper,
-        the last overview aim is kept.
+        Uses the live detection when it is still clear. Otherwise keeps
+        the pixel remembered before the arm covered the disc. Never
+        aborts the pick if jaws cannot be seen.
         """
+        cap_u, cap_v = float(aim_u), float(aim_v)
+        box_w, box_h = float(aim_w), float(aim_h)
+        seed_x, seed_y = x_mm, y_mm
+        best_x, best_y = x_mm, y_mm
+        best_error = None
         for attempt in range(ALIGN_MAX_NUDGES + 1):
             frame = self._wait_for_frame()
+            if frame is None:
+                self.get_logger().info(
+                    "No overview frame at align; keeping the aim."
+                )
+                return best_x, best_y
             detection = self._fresh_detection(self._pick_class)
-            if frame is None or detection is None:
+            if detection is not None and _cap_still_clear(
+                frame, self._pick_class, detection
+            ):
+                cap_u, cap_v = refine_cap_center(
+                    frame,
+                    self._pick_class,
+                    float(detection["u"]),
+                    float(detection["v"]),
+                    float(detection.get("size_x", 0.0)),
+                    float(detection.get("size_y", 0.0)),
+                )
+                box_w = float(detection.get("size_x") or box_w)
+                box_h = float(detection.get("size_y") or box_h)
+            elif not (cap_u > 1.0 and cap_v > 1.0):
                 self.get_logger().info(
-                    "Overview lost the cap at hover; "
+                    "No remembered cap pixel at align; "
                     "keeping the current aim."
                 )
-                return x_mm, y_mm
-            if not _cap_still_clear(frame, self._pick_class, detection):
-                self.get_logger().info(
-                    "Gripper is covering the cap at hover; "
-                    "keeping the current aim."
-                )
-                return x_mm, y_mm
-            cap_u, cap_v = refine_cap_center(
-                frame,
-                self._pick_class,
-                float(detection["u"]),
-                float(detection["v"]),
-                float(detection.get("size_x", 0.0)),
-                float(detection.get("size_y", 0.0)),
-            )
-            box_w = float(detection.get("size_x") or 36.0)
-            box_h = float(detection.get("size_y") or 36.0)
-            # Finger midpoint is the grasp point. gripper_tip sits
-            # further forward and was pushing red/white picks ahead.
-            tip = finger_midpoint(frame, cap_u, cap_v, box_w, box_h)
-            if tip is None:
-                tip = gripper_beside_cap(frame, cap_u, cap_v)
+                return best_x, best_y
+            tip = _jaw_midpoint(frame, cap_u, cap_v, box_w, box_h)
             if tip is None:
                 self.get_logger().info(
-                    "Gripper jaws not visible at hover; "
+                    "Gripper jaws not visible at align; "
                     "keeping the current aim."
                 )
-                return x_mm, y_mm
+                return best_x, best_y
             error_x, error_y = _pixel_offset_mm(
                 self._mapping,
                 cap_u,
@@ -1390,14 +2122,44 @@ class PickPlace(Node):
                 f"{error:.1f} mm from the cap centre "
                 f"at pixel {cap_u:.0f}, {cap_v:.0f}."
             )
+            # Huge initial jaw error is usually a false tip (arm/cable);
+            # trust the overview XY seed instead of walking away.
+            if best_error is None and error > 35.0:
+                self.get_logger().info(
+                    "Jaw-to-cap error "
+                    f"{error:.1f} mm looks unreliable; "
+                    "keeping the overview aim."
+                )
+                return seed_x, seed_y
+            # A noisy jaw reading that suddenly looks worse is ignored;
+            # keep the best pose soft-align has already reached.
+            if best_error is not None and error > best_error + 4.0:
+                self.get_logger().info(
+                    "Jaw reading jumped worse "
+                    f"({error:.1f} mm after {best_error:.1f} mm); "
+                    "keeping the better aim."
+                )
+                return best_x, best_y
+            if best_error is not None and error > best_error - 1.5:
+                self.get_logger().info(
+                    "Jaw align did not improve "
+                    f"({error:.1f} mm after {best_error:.1f} mm); "
+                    "keeping the better aim."
+                )
+                return best_x, best_y
+            if best_error is None or error < best_error:
+                best_error = error
+                best_x, best_y = x_mm, y_mm
             if error <= ALIGN_TOLERANCE_MM:
-                return x_mm, y_mm
+                return best_x, best_y
             if attempt == ALIGN_MAX_NUDGES:
                 self.get_logger().info(
                     "Hover align stopped at "
-                    f"{error:.1f} mm; lowering anyway."
+                    f"{best_error:.1f} mm; lowering anyway."
                 )
-                return x_mm, y_mm
+                if best_error is not None and best_error > 25.0:
+                    return seed_x, seed_y
+                return best_x, best_y
             shift_x, shift_y = _limited_shift(
                 -error_x * ALIGN_CORRECTION_GAIN,
                 -error_y * ALIGN_CORRECTION_GAIN,
@@ -1413,10 +2175,10 @@ class PickPlace(Node):
                 DESCEND_SPEED,
             )
             if status != 200 or not body.get("success"):
-                return x_mm, y_mm
+                return best_x, best_y
             x_mm, y_mm = moved_x, moved_y
             time.sleep(ALIGN_SETTLE_SECONDS)
-        return x_mm, y_mm
+        return best_x, best_y
 
     def _nudge_at_grasp(
         self,
@@ -1426,6 +2188,8 @@ class PickPlace(Node):
         pixel_v,
         grasp_z,
         orientation,
+        box_w=36.0,
+        box_h=36.0,
     ):
         """One last sideways nudge if the open jaws sit beside the cap."""
         frame = self._wait_for_frame()
@@ -1441,18 +2205,13 @@ class PickPlace(Node):
                 float(detection.get("size_x", 0.0)),
                 float(detection.get("size_y", 0.0)),
             )
-            box_w = float(detection.get("size_x") or 36.0)
-            box_h = float(detection.get("size_y") or 36.0)
-        else:
-            box_w = 36.0
-            box_h = 36.0
+            box_w = float(detection.get("size_x") or box_w)
+            box_h = float(detection.get("size_y") or box_h)
         if str(self._pick_class or "").casefold() == "red_cap":
             red = red_disc_center(frame, pixel_u, pixel_v, box_w, box_h)
             if red is not None and red[2] >= 200.0:
                 pixel_u, pixel_v = red[0], red[1]
-        tip = finger_midpoint(frame, pixel_u, pixel_v, box_w, box_h)
-        if tip is None:
-            tip = gripper_beside_cap(frame, pixel_u, pixel_v)
+        tip = _jaw_midpoint(frame, pixel_u, pixel_v, box_w, box_h)
         if tip is None:
             self.get_logger().info(
                 "Jaws not visible at grasp; closing on the aim point."
@@ -1469,12 +2228,12 @@ class PickPlace(Node):
         self.get_logger().info(
             f"Jaws are {error:.1f} mm from the cap at grasp."
         )
-        if error < 2.0 or error > 14.0:
+        if error < 2.0 or error > 22.0:
             return x_mm, y_mm
         shift_x, shift_y = _limited_shift(
             -error_x * ALIGN_CORRECTION_GAIN,
             -error_y * ALIGN_CORRECTION_GAIN,
-            6.0,
+            10.0,
         )
         moved_x = x_mm + shift_x
         moved_y = y_mm + shift_y
@@ -1667,18 +2426,18 @@ class PickPlace(Node):
         return [float(angle) for angle in angles]
 
     def return_initial(self):
-        """Move to the pose saved when the latest pick started."""
-        if self._initial_pose is None:
-            return _error_payload(
-                "No initial position yet. Start a pick first."
-            )
+        """Move to the parking pose the overview camera sees from."""
+        if self._calibration is None:
+            return _error_payload(self._mapping_error or "Not calibrated.")
         if not self._motion_lock.acquire(blocking=False):
-            return _error_payload("A pick is already running", 409)
+            return _error_payload("A move is already running", 409)
         self._busy = True
         try:
+            if self._initial_pose is None:
+                self._initial_pose = self._observe_pose()
             status, body = self._move_initial()
             if status == 200 and body.get("success"):
-                body["message"] = "Returned to the initial position."
+                body["message"] = "Initial position reached"
             return status, body
         finally:
             self._busy = False
@@ -1692,6 +2451,17 @@ class PickPlace(Node):
         speed = 12
         if self._calibration is not None:
             speed = self._calibration["speed"]
+            # A direct move from a low pose sweeps across the caps.
+            status, body = self._raise_for_travel(
+                (
+                    self._calibration["tool_rx"],
+                    self._calibration["tool_ry"],
+                    self._calibration["tool_rz"],
+                ),
+                speed,
+            )
+            if status != 200 or not body.get("success"):
+                return status, body
         target_x, target_y, target_z = (
             float(pose[0]),
             float(pose[1]),
@@ -1873,6 +2643,49 @@ class PickPlace(Node):
             self._jpeg = encoded.tobytes()
             self._jpeg_encoded_at = now
 
+    def _track_wrist_center(self, image, class_name, blend=True):
+        """Return a steady wrist centre for one cap colour.
+
+        A new colour drops the previous lock. While locked, only a
+        blob near the last centre is accepted, and that centre is
+        blended so glare does not walk the ring. blend=False returns
+        the fresh reading, since a lagging centre hides how far a
+        nudge really moved the cap.
+        """
+        name = str(class_name or "").casefold()
+        with self._lock:
+            same = self._wrist_lock_class == name and self._wrist_lock is not None
+            hint = self._wrist_lock if same else None
+        measured = wrist_cap_center(image, name, hint=hint)
+        with self._lock:
+            if measured is None:
+                if self._wrist_lock_class == name:
+                    self._wrist_lock_misses += 1
+                    if self._wrist_lock_misses >= WRIST_LOCK_MISSES:
+                        self._wrist_lock = None
+                        self._wrist_lock_class = None
+                return None
+            if (
+                blend
+                and self._wrist_lock is not None
+                and self._wrist_lock_class == name
+            ):
+                kept_u = (
+                    WRIST_LOCK_BLEND * float(measured[0])
+                    + (1.0 - WRIST_LOCK_BLEND) * self._wrist_lock[0]
+                )
+                kept_v = (
+                    WRIST_LOCK_BLEND * float(measured[1])
+                    + (1.0 - WRIST_LOCK_BLEND) * self._wrist_lock[1]
+                )
+            else:
+                kept_u = float(measured[0])
+                kept_v = float(measured[1])
+            self._wrist_lock = (kept_u, kept_v)
+            self._wrist_lock_class = name
+            self._wrist_lock_misses = 0
+            return self._wrist_lock
+
     def _on_wrist_image(self, message):
         """Keep the latest wrist frame and a marked JPEG for the page."""
         now = time.monotonic()
@@ -1889,7 +2702,9 @@ class PickPlace(Node):
         with self._lock:
             self._wrist_frame = image
             self._wrist_frame_received = now
-        if now - self._wrist_jpeg_encoded_at < 0.2:
+        # The page only needs a slow preview. Running the colour
+        # finders on every frame starves the other callbacks.
+        if now - self._wrist_jpeg_encoded_at < WRIST_PREVIEW_PERIOD_SECONDS:
             return
         marked = image.copy()
         target_u, target_v = _wrist_target(
@@ -1915,7 +2730,18 @@ class PickPlace(Node):
             1,
         )
         class_name = self._pick_class or self._target_class
-        center = wrist_cap_center(image, class_name)
+        center = self._track_wrist_center(image, class_name)
+        label = class_name
+        if center is None:
+            for other in ("red_cap", "black_cap", "white_cap"):
+                if str(other) == str(class_name or "").casefold():
+                    continue
+                found = self._track_wrist_center(image, other)
+                if found is None:
+                    continue
+                center = found
+                label = other
+                break
         if center is not None:
             cv2.circle(
                 marked,
@@ -1923,6 +2749,19 @@ class PickPlace(Node):
                 8,
                 (0, 255, 0),
                 2,
+            )
+            cv2.putText(
+                marked,
+                str(label or ""),
+                (
+                    int(round(center[0])) + 10,
+                    max(16, int(round(center[1])) - 8),
+                ),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (0, 255, 0),
+                1,
+                cv2.LINE_AA,
             )
         success, encoded = cv2.imencode(
             ".jpg",
@@ -2118,6 +2957,8 @@ class PickHandler(BaseHTTPRequestHandler):
         if path == "/api/pick":
             body = self._read_json()
             status, payload = node.pick(body.get("class_name"))
+        elif path == "/api/pick_all":
+            status, payload = node.pick_all()
         elif path == "/api/stop":
             status, payload = node.stop_robot()
         elif path == "/api/return":
@@ -2136,7 +2977,8 @@ class PickHandler(BaseHTTPRequestHandler):
         elif path == "/api/calibrate/clear":
             status, payload = node.clear_calibration_spots()
         elif path == "/api/calibrate/drop":
-            status, payload = node.capture_drop()
+            body = self._read_json()
+            status, payload = node.capture_drop(body.get("class_name"))
         elif path == "/api/calibrate/clearances":
             status, payload = node.save_clearances(self._read_json())
         elif path == "/api/calibrate/undo":
@@ -2255,6 +3097,27 @@ def _pixel_offset_mm(mapping, cap_u, cap_v, grip_u, grip_v):
     return grip_x - cap_x, grip_y - cap_y
 
 
+def _jaw_midpoint(image, cap_u, cap_v, box_w, box_h):
+    """Return the open-jaw midpoint near a remembered cap pixel.
+
+    Prefers the two-finger pair beside the disc. Falls back to the
+    global pad midpoint only when it sits near that disc, so the arm
+    base is never mistaken for the gripper.
+    """
+    tip = finger_midpoint(image, cap_u, cap_v, box_w, box_h)
+    if tip is not None:
+        return tip
+    tip = gripper_beside_cap(image, cap_u, cap_v)
+    if tip is not None:
+        return tip
+    pad = overview_pad_center(image)
+    if pad is None:
+        return None
+    if math.hypot(pad[0] - cap_u, pad[1] - cap_v) > 110.0:
+        return None
+    return (pad[0], pad[1])
+
+
 def _limited_shift(shift_x, shift_y, limit_mm):
     """Scale a nudge so one try stays inside the step limit."""
     length = math.hypot(shift_x, shift_y)
@@ -2262,6 +3125,15 @@ def _limited_shift(shift_x, shift_y, limit_mm):
         return shift_x, shift_y
     scale = limit_mm / length
     return shift_x * scale, shift_y * scale
+
+
+def _wrist_gain_scale(height_z, table_z):
+    """Return the share of the travel-height wrist gain for one height."""
+    reference = TRAVEL_Z_MM - table_z + WRIST_LENS_ABOVE_TIP_MM
+    current = height_z - table_z + WRIST_LENS_ABOVE_TIP_MM
+    if reference <= 0.0:
+        return 1.0
+    return min(1.0, max(0.3, current / reference))
 
 
 def gripper_tip(image, cap_u, cap_v, box_width, box_height):
@@ -2413,20 +3285,28 @@ def _wrist_search_roi(image):
 
 
 def _gripper_free_mask(image):
-    """Mask out bright gripper plastic so nearby dark pads are ignored."""
+    """Mask out bright gripper plastic so nearby dark pads are ignored.
+
+    Only the jaw column is removed. A wider band also erased a white
+    cap sitting just to the right of the fingers.
+    """
     height, width = image.shape[:2]
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     white = cv2.inRange(hsv, (0, 0, 150), (180, 70, 255))
     left_band = np.zeros((height, width), dtype=np.uint8)
-    left_band[:, : int(width * 0.55)] = 255
+    left_band[:, : int(width * 0.34)] = 255
     gripper = cv2.bitwise_and(white, left_band)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
     gripper = cv2.dilate(gripper, kernel, iterations=1)
     return cv2.bitwise_not(gripper)
 
 
-def wrist_cap_center(image, class_name):
-    """Return the coloured cap centre in a wrist image, or None."""
+def wrist_cap_center(image, class_name, hint=None):
+    """Return the coloured cap centre in a wrist image, or None.
+
+    hint is the last accepted centre for this colour. A blob far from
+    it is rejected so the ring cannot jump to another object.
+    """
     if image is None or image.size == 0:
         return None
     roi, left = _wrist_search_roi(image)
@@ -2434,18 +3314,21 @@ def wrist_cap_center(image, class_name):
         return None
     free = _gripper_free_mask(roi)
     name = str(class_name or "").casefold()
+    local_hint = None
+    if hint is not None:
+        local_hint = (float(hint[0]) - left, float(hint[1]))
     if name == "black_cap":
-        center = _round_dark_center(roi, free)
+        center = _round_dark_center(roi, free, hint=local_hint)
     elif name == "white_cap":
-        center = _pale_center(roi, free)
+        center = _pale_center(roi, free, hint=local_hint)
     else:
-        center = _red_center(roi, free)
+        center = _red_center(roi, free, hint=local_hint)
     if center is None:
         return None
     return center[0] + left, center[1]
 
 
-def _red_center(image, free_mask=None):
+def _red_center(image, free_mask=None, hint=None):
     """Return the centre of the roundest red region."""
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     low = cv2.inRange(hsv, (0, 90, 50), (12, 255, 255))
@@ -2453,51 +3336,123 @@ def _red_center(image, free_mask=None):
     mask = cv2.bitwise_or(low, high)
     if free_mask is not None:
         mask = cv2.bitwise_and(mask, free_mask)
-    return _round_blob_center(mask, image.shape, minimum_area=80.0)
+    return _round_blob_center(
+        mask, image.shape, minimum_area=80.0, hint=hint,
+    )
 
 
-def _round_dark_center(image, free_mask=None):
+def _round_dark_center(image, free_mask=None, hint=None):
     """Return a round dark bottle cap and ignore cables or shadows."""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     median = float(np.median(gray))
-    threshold = min(median - 35.0, 70.0)
-    if threshold < 15.0:
+    # Stay below the cast shadow. A higher cutoff joins the shadow
+    # to the lid and the roundness test then rejects the cap.
+    threshold = min(median * 0.22, 40.0)
+    if threshold < 18.0:
         return None
     mask = np.uint8(gray < threshold) * np.uint8(255)
     if free_mask is not None:
         mask = cv2.bitwise_and(mask, free_mask)
-    return _round_blob_center(mask, image.shape, minimum_area=180.0)
+    return _round_blob_center(
+        mask, image.shape, minimum_area=180.0, hint=hint,
+    )
 
 
-def _pale_center(image, free_mask=None):
-    """Return a round pale/silver cap in the wrist view."""
+def _pale_center(image, free_mask=None, hint=None):
+    """Return a silver cap: a cap-sized disc slightly darker than the table.
+
+    The lid is too close to the white table for a brightness mask, and the
+    red print breaks the disc. A circle counts only when it holds a little
+    of that print (not a solid red cap) and is darker than the ring around it.
+    """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    median = float(np.median(gray))
-    low = max(55.0, median - 25.0)
-    high = min(210.0, median + 55.0)
-    if high - low < 20.0:
-        return None
-    mask = np.uint8((gray >= low) & (gray <= high)) * np.uint8(255)
-    # Prefer the brighter core of a printed silver lid.
-    bright = np.uint8(gray > max(low + 15.0, median + 10.0)) * np.uint8(255)
-    if cv2.countNonZero(bright) > 80:
-        mask = cv2.bitwise_and(mask, bright)
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    red = cv2.inRange(hsv, (0, 90, 60), (12, 255, 255))
+    red = cv2.bitwise_or(red, cv2.inRange(hsv, (168, 90, 60), (180, 255, 255)))
     if free_mask is not None:
-        mask = cv2.bitwise_and(mask, free_mask)
-    return _round_blob_center(mask, image.shape, minimum_area=120.0)
+        red = cv2.bitwise_and(red, free_mask)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    circles = cv2.HoughCircles(
+        blurred,
+        cv2.HOUGH_GRADIENT,
+        1.2,
+        50,
+        param1=80,
+        param2=18,
+        minRadius=22,
+        maxRadius=95,
+    )
+    if circles is None:
+        return None
+    height, width = gray.shape[:2]
+    best = None
+    for raw_u, raw_v, radius in circles[0]:
+        center_u = float(raw_u)
+        center_v = float(raw_v)
+        radius = float(radius)
+        pixel_u = int(round(center_u))
+        pixel_v = int(round(center_v))
+        if pixel_u < 0 or pixel_v < 0 or pixel_u >= width or pixel_v >= height:
+            continue
+        if free_mask is not None and free_mask[pixel_v, pixel_u] == 0:
+            continue
+        if hint is not None:
+            hint_u, hint_v = hint
+            if math.hypot(center_u - hint_u, center_v - hint_v) > WRIST_LOCK_RADIUS_PX:
+                continue
+        # Measure in a window around the circle. A full-frame mask per
+        # candidate costs more time than the camera frame interval.
+        reach = int(math.ceil(radius * 1.35)) + 1
+        left = max(0, pixel_u - reach)
+        top = max(0, pixel_v - reach)
+        right = min(width, pixel_u + reach + 1)
+        bottom = min(height, pixel_v + reach + 1)
+        window_gray = gray[top:bottom, left:right]
+        window_red = red[top:bottom, left:right]
+        rows, cols = np.ogrid[top:bottom, left:right]
+        distance = np.hypot(cols - center_u, rows - center_v)
+        disc = distance <= radius * 0.85
+        disc_count = int(np.count_nonzero(disc))
+        if disc_count < 80:
+            continue
+        print_fraction = (
+            float(np.count_nonzero(window_red[disc])) / float(disc_count)
+        )
+        if print_fraction < 0.06 or print_fraction > 0.35:
+            continue
+        ring = (distance >= radius * 1.05) & (distance <= radius * 1.35)
+        if int(np.count_nonzero(ring)) < 40:
+            continue
+        disc_median = float(np.median(window_gray[disc]))
+        # A black cap is far darker than a silver lid in shadow.
+        if disc_median < 28.0:
+            continue
+        if float(np.median(window_gray[ring])) - disc_median < 8.0:
+            continue
+        if best is None or print_fraction > best[0]:
+            best = (print_fraction, center_u, center_v)
+    if best is None:
+        return None
+    return best[1], best[2]
 
 
-def _round_blob_center(mask, shape, minimum_area=120.0):
-    """Return the most circular blob centre in a mask."""
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+def _prepare_blob_mask(mask):
+    """Close glare holes, then drop single-pixel noise."""
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kernel)
+    return cv2.morphologyEx(closed, cv2.MORPH_OPEN, open_kernel)
+
+
+def _round_blob_center(mask, shape, minimum_area=120.0, hint=None):
+    """Return the enclosing-circle centre of the round cap blob."""
+    mask = _prepare_blob_mask(mask)
     contours, _hierarchy = cv2.findContours(
         mask,
         cv2.RETR_EXTERNAL,
         cv2.CHAIN_APPROX_SIMPLE,
     )
-    best = None
-    best_score = 0.0
+    candidates = []
     max_area = float(shape[0] * shape[1]) * 0.18
     for contour in contours:
         area = cv2.contourArea(contour)
@@ -2509,23 +3464,38 @@ def _round_blob_center(mask, shape, minimum_area=120.0):
         circularity = 4.0 * math.pi * area / (perimeter * perimeter)
         if circularity < WRIST_MIN_CIRCULARITY:
             continue
-        _center, size, _angle = cv2.minAreaRect(contour)
+        (center_u, center_v), radius = cv2.minEnclosingCircle(contour)
+        if radius < 1.0:
+            continue
+        diameter = 2.0 * float(radius)
+        if diameter < WRIST_MIN_DIAMETER_PX or diameter > WRIST_MAX_DIAMETER_PX:
+            continue
+        fill = area / (math.pi * float(radius) * float(radius))
+        if fill < WRIST_MIN_FILL:
+            continue
+        _box_center, size, _angle = cv2.minAreaRect(contour)
         short_side = min(float(size[0]), float(size[1]))
         long_side = max(float(size[0]), float(size[1]))
-        if short_side < 10.0 or long_side / short_side > 1.40:
+        if short_side < 10.0 or long_side / max(short_side, 1e-6) > 1.40:
             continue
-        moments = cv2.moments(contour)
-        if moments["m00"] == 0.0:
-            continue
-        # Prefer round bottle-cap shapes over large irregular shadows.
-        score = circularity * math.sqrt(area)
-        if score > best_score:
-            best = (
-                moments["m10"] / moments["m00"],
-                moments["m01"] / moments["m00"],
-            )
-            best_score = score
-    return best
+        candidates.append((
+            float(center_u),
+            float(center_v),
+            circularity * math.sqrt(area),
+        ))
+    if not candidates:
+        return None
+    if hint is not None:
+        near = [
+            item for item in candidates
+            if math.hypot(item[0] - float(hint[0]), item[1] - float(hint[1]))
+            <= WRIST_LOCK_RADIUS_PX
+        ]
+        if not near:
+            return None
+        candidates = near
+    candidates.sort(key=lambda item: item[2], reverse=True)
+    return candidates[0][0], candidates[0][1]
 
 
 def _largest_blob_center(mask, minimum_area):
@@ -2696,6 +3666,18 @@ def _load_calibration(path):
             "pairs": pairs,
         }
     )
+    for key in (
+        "drop_red_x_mm",
+        "drop_red_y_mm",
+        "drop_black_x_mm",
+        "drop_black_y_mm",
+        "drop_white_x_mm",
+        "drop_white_y_mm",
+    ):
+        if data.get(key) is not None:
+            loaded_values[key] = float(data[key])
+        else:
+            loaded_values[key] = None
     return loaded_values
 
 
@@ -2893,6 +3875,12 @@ def _load_wizard(path):
         "hover_mm": None,
         "drop_x_mm": None,
         "drop_y_mm": None,
+        "drop_red_x_mm": None,
+        "drop_red_y_mm": None,
+        "drop_black_x_mm": None,
+        "drop_black_y_mm": None,
+        "drop_white_x_mm": None,
+        "drop_white_y_mm": None,
         "tool_rx": -180.0,
         "tool_ry": 0.0,
         "tool_rz": 0.0,
@@ -2909,7 +3897,18 @@ def _load_wizard(path):
     ][:FIT_SPOT_COUNT]
     if data.get("check"):
         wizard["check"] = _spot(data["check"])
-    for key in ("table_z_mm", "hover_mm", "drop_x_mm", "drop_y_mm"):
+    for key in (
+        "table_z_mm",
+        "hover_mm",
+        "drop_x_mm",
+        "drop_y_mm",
+        "drop_red_x_mm",
+        "drop_red_y_mm",
+        "drop_black_x_mm",
+        "drop_black_y_mm",
+        "drop_white_x_mm",
+        "drop_white_y_mm",
+    ):
         if data.get(key) is not None:
             wizard[key] = float(data[key])
     for key in ("tool_rx", "tool_ry", "tool_rz"):
@@ -2954,6 +3953,30 @@ def _calibration_from_wizard(wizard):
         "hover_mm": float(wizard["hover_mm"]),
         "drop_x_mm": float(wizard["drop_x_mm"]),
         "drop_y_mm": float(wizard["drop_y_mm"]),
+        "drop_red_x_mm": (
+            None if wizard.get("drop_red_x_mm") is None
+            else float(wizard["drop_red_x_mm"])
+        ),
+        "drop_red_y_mm": (
+            None if wizard.get("drop_red_y_mm") is None
+            else float(wizard["drop_red_y_mm"])
+        ),
+        "drop_black_x_mm": (
+            None if wizard.get("drop_black_x_mm") is None
+            else float(wizard["drop_black_x_mm"])
+        ),
+        "drop_black_y_mm": (
+            None if wizard.get("drop_black_y_mm") is None
+            else float(wizard["drop_black_y_mm"])
+        ),
+        "drop_white_x_mm": (
+            None if wizard.get("drop_white_x_mm") is None
+            else float(wizard["drop_white_x_mm"])
+        ),
+        "drop_white_y_mm": (
+            None if wizard.get("drop_white_y_mm") is None
+            else float(wizard["drop_white_y_mm"])
+        ),
         "tool_rx": float(wizard.get("tool_rx", -176.0)),
         "tool_ry": float(wizard.get("tool_ry", 0.0)),
         "tool_rz": float(wizard.get("tool_rz", -88.0)),
@@ -2976,6 +3999,12 @@ def _write_wizard(path, wizard, accepted=False):
             "tool_rz": wizard.get("tool_rz", -88.0),
             "drop_x_mm": wizard.get("drop_x_mm"),
             "drop_y_mm": wizard.get("drop_y_mm"),
+            "drop_red_x_mm": wizard.get("drop_red_x_mm"),
+            "drop_red_y_mm": wizard.get("drop_red_y_mm"),
+            "drop_black_x_mm": wizard.get("drop_black_x_mm"),
+            "drop_black_y_mm": wizard.get("drop_black_y_mm"),
+            "drop_white_x_mm": wizard.get("drop_white_x_mm"),
+            "drop_white_y_mm": wizard.get("drop_white_y_mm"),
             "speed": wizard.get("speed", 12),
             "pairs": wizard.get("pairs") or [],
             "check": wizard.get("check"),
@@ -3148,59 +4177,76 @@ def overview_pad_center(image):
     y0 = int(height * 0.12)
     crop = gray[y0:, :]
     median = float(np.median(crop))
-    threshold = min(median - 35.0, 95.0)
-    if threshold < 20.0:
-        return None
-    mask = np.uint8(crop < threshold) * np.uint8(255)
+    thresholds = [min(median - delta, 100.0) for delta in (20.0, 28.0, 35.0, 45.0)]
+    thresholds.extend([45.0, 55.0, 70.0, 85.0, 100.0])
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    contours, _hierarchy = cv2.findContours(
-        mask,
-        cv2.RETR_EXTERNAL,
-        cv2.CHAIN_APPROX_SIMPLE,
-    )
-    tips = []
-    for contour in contours:
-        area = cv2.contourArea(contour)
-        if area < 60.0 or area > 3500.0:
-            continue
-        _center, size, _angle = cv2.minAreaRect(contour)
-        short_side = min(float(size[0]), float(size[1]))
-        long_side = max(float(size[0]), float(size[1]))
-        if short_side < 4.0:
-            continue
-        # Pads are compact; long cables are rejected.
-        if long_side / short_side > 3.2:
-            continue
-        moments = cv2.moments(contour)
-        if moments["m00"] == 0.0:
-            continue
-        tip_u = moments["m10"] / moments["m00"]
-        tip_v = moments["m01"] / moments["m00"] + y0
-        # Prefer the lowest part of each blob (pad contact).
-        points = contour[:, 0, :]
-        lowest = points[points[:, 1] >= points[:, 1].max() - 2]
-        tip_u = float(lowest[:, 0].mean())
-        tip_v = float(lowest[:, 1].mean()) + y0
-        tips.append((tip_u, tip_v, area))
-    if len(tips) < 2:
-        return None
+    x_cable = int(width * 0.14)
     best = None
     best_score = None
-    for index, first in enumerate(tips):
-        for second in tips[index + 1:]:
-            gap = math.hypot(first[0] - second[0], first[1] - second[1])
-            if gap < 14.0 or gap > 90.0:
+
+    def _ok(u, v):
+        return (
+            width * 0.16 < u < width * 0.84
+            and height * 0.16 < v < height * 0.88
+        )
+
+    for threshold in thresholds:
+        if threshold < 12.0:
+            continue
+        mask = np.uint8(crop < threshold) * np.uint8(255)
+        mask[:, :x_cable] = 0
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        contours, _hierarchy = cv2.findContours(
+            mask,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+        tips = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < 40.0 or area > 3500.0:
                 continue
-            # Pads sit side-by-side more than stacked.
-            if abs(first[1] - second[1]) > 45.0:
+            _center, size, _angle = cv2.minAreaRect(contour)
+            short_side = min(float(size[0]), float(size[1]))
+            long_side = max(float(size[0]), float(size[1]))
+            if short_side < 3.5:
                 continue
-            mid_u = (first[0] + second[0]) / 2.0
-            mid_v = (first[1] + second[1]) / 2.0
-            score = (first[2] + second[2]) / (1.0 + abs(first[1] - second[1]))
-            if best is None or score > best_score:
-                best = (mid_u, mid_v)
-                best_score = score
+            # Pads are compact; long cables are rejected.
+            if long_side / short_side > 3.2:
+                continue
+            points = contour[:, 0, :]
+            lowest = points[points[:, 1] >= points[:, 1].max() - 2]
+            tip_u = float(lowest[:, 0].mean())
+            tip_v = float(lowest[:, 1].mean()) + y0
+            if not _ok(tip_u, tip_v):
+                continue
+            tips.append((tip_u, tip_v, area))
+        if len(tips) < 2:
+            continue
+        for index, first in enumerate(tips):
+            for second in tips[index + 1:]:
+                gap = math.hypot(first[0] - second[0], first[1] - second[1])
+                if gap < 14.0 or gap > 90.0:
+                    continue
+                # Pads sit side-by-side more than stacked.
+                if abs(first[1] - second[1]) > 40.0:
+                    continue
+                mid_u = (first[0] + second[0]) / 2.0
+                mid_v = (first[1] + second[1]) / 2.0
+                if not _ok(mid_u, mid_v):
+                    continue
+                area_ratio = max(first[2], second[2]) / max(min(first[2], second[2]), 1.0)
+                if area_ratio > 4.0:
+                    continue
+                score = (first[2] + second[2]) / (
+                    1.0 + abs(first[1] - second[1]) + abs(gap - 35.0)
+                )
+                score -= area_ratio * 15.0
+                if best is None or score > best_score:
+                    best = (mid_u, mid_v)
+                    best_score = score
+        if best is not None:
+            return best
     return best
 
 
@@ -3248,6 +4294,15 @@ def _check_report(wizard):
         "drop_x_mm": round(float(wizard["drop_x_mm"]), 2),
         "drop_y_mm": round(float(wizard["drop_y_mm"]), 2),
         "drop_z_mm": round(table_z, 2),
+        "fit_residuals": pair_fit_residuals(
+            pairs,
+            lambda u, v: project_table(mapping, u, v),
+        ),
+        "spot4_remake_hint": (
+            "Remake fit spot 4 at table z ≈ "
+            f"{table_z:.0f} mm if its residual exceeds "
+            f"{MAX_FIT_SPOT_RESIDUAL_MM:.0f} mm."
+        ),
     }
 
 
@@ -3290,7 +4345,14 @@ def _share_or_local(file_name):
 def _stopped_by_user(body):
     """Return true when the operator pressed Stop."""
     message = str(body.get("message", "")).casefold()
-    return "stop" in message and "error" not in message
+    # Do not match "stopped on the cap" / similar gripper text.
+    markers = (
+        "stop requested",
+        "stopped by user",
+        "user pressed stop",
+        "motion stopped by operator",
+    )
+    return any(marker in message for marker in markers)
 
 
 def _smootherstep(blend):
@@ -3441,17 +4503,39 @@ def _cap_disc_center(image, class_name, pixel_u, pixel_v, size_x, size_y):
         long_side = max(float(short_w), float(short_h))
         if short_side < 14.0 or long_side / short_side > 1.45:
             continue
-        moments = cv2.moments(contour)
-        if moments["m00"] == 0.0:
-            continue
-        center_u = x0 + moments["m10"] / moments["m00"]
-        center_v = y0 + moments["m01"] / moments["m00"]
+        (circle_x, circle_y), _radius = cv2.minEnclosingCircle(contour)
+        center_u = x0 + float(circle_x)
+        center_v = y0 + float(circle_y)
         if math.hypot(center_u - pixel_u, center_v - pixel_v) > span * 0.5:
             continue
         if best is None or area > best[0]:
             best = (area, center_u, center_v)
     if best is None:
         return None
+    if name == "black_cap":
+        center_u, center_v = best[1], best[2]
+        margin = 36.0
+        if (
+            center_u < margin
+            or center_v < margin
+            or center_u > width - margin
+            or center_v > height - margin
+            or center_v > height * 0.88
+        ):
+            return None
+        circle = np.zeros(gray_full.shape, np.uint8)
+        cv2.circle(
+            circle,
+            (int(round(center_u)), int(round(center_v))),
+            12,
+            255,
+            -1,
+        )
+        pixels = gray_full[circle > 0]
+        if pixels.size < 20:
+            return None
+        if float(np.median(pixels)) > 22.0 or float(np.mean(pixels < 40.0)) < 0.70:
+            return None
     return best[1], best[2]
 
 
@@ -3481,7 +4565,7 @@ def _circle_matches_cap(roi, class_name, center_x, center_y, radius):
     if name == "red_cap":
         return red_fraction > 0.35
     if name == "black_cap":
-        return median < 55.0 and red_fraction < 0.2
+        return median < 40.0 and red_fraction < 0.15
     if name == "white_cap":
         # The silver cap carries a printed logo, so it is brighter
         # than the black cap and less flat than the bare table.
@@ -3644,7 +4728,7 @@ def main(args=None):
     """Run the pick page until the process is interrupted."""
     rclpy.init(args=args)
     node = PickPlace()
-    executor = MultiThreadedExecutor(num_threads=2)
+    executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
     try:
         executor.spin()

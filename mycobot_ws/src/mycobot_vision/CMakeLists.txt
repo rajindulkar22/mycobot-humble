@@ -19,6 +19,7 @@ install(
     scripts/dataset_capture.py
     scripts/table_preview.py
     scripts/pick_place.py
+    scripts/grasp_autonomy.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

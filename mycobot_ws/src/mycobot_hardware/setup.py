@@ -31,6 +31,7 @@ setup(
             [
                 "mycobot_hardware/demo_page.html",
                 "mycobot_hardware/joint_plot_page.html",
+                "mycobot_hardware/supervisor_page.html",
             ],
         ),
     ],
@@ -46,6 +47,7 @@ setup(
             "state_publisher = mycobot_hardware.state_publisher:main",
             "demo_ui = mycobot_hardware.demo_ui:main",
             "joint_plot = mycobot_hardware.joint_plot:main",
+            "supervisor_ui = mycobot_hardware.supervisor_ui:main",
         ],
     },
 )

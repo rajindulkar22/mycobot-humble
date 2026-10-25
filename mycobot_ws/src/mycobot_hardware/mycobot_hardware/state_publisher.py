@@ -512,6 +512,13 @@ class MyCobotStatePublisher(Node):
             return False, "Robot port is busy. Try again."
         try:
             if hold:
+                # Holding after Stop also unlatches software stop so
+                # the next guarded move can run.
+                self.stop_requested.clear()
+                try:
+                    self.robot.clear_error_information()
+                except Exception:
+                    pass
                 self.robot.focus_all_servos()
                 return True, (
                     "Motors are holding. Wait for a fresh pose, "
@@ -643,6 +650,7 @@ class MyCobotStatePublisher(Node):
             contact_error = None
             stable_value = start_value
             stable_since = command_started
+            resent = False
 
             while time.monotonic() < deadline:
                 if self.stop_requested.is_set():
@@ -694,6 +702,24 @@ class MyCobotStatePublisher(Node):
                             stable_value = final_value
                             stable_since = time.monotonic()
                         stable_for = time.monotonic() - stable_since
+                        elapsed = time.monotonic() - command_started
+                        # Re-send once if a close command was dropped
+                        # right after an arm move and the jaws stayed open.
+                        if (
+                            state == 1
+                            and not resent
+                            and elapsed >= 1.2
+                            and final_value >= 90
+                        ):
+                            resent = True
+                            stable_since = time.monotonic()
+                            with self.serial_mutex:
+                                self.robot.set_gripper_state(
+                                    state,
+                                    speed,
+                                    _type_1=1,
+                                )
+                            continue
                         opened = (
                             state == 0
                             and final_value >= self.gripper_open_min
@@ -702,7 +728,6 @@ class MyCobotStatePublisher(Node):
                         # A bottle cap stops the jaws well before they
                         # meet. A reading near fully open is a pad on
                         # the lid, and a reading near 0 is an empty close.
-                        elapsed = time.monotonic() - command_started
                         held = (
                             state == 1
                             and 12 <= final_value <= 86
@@ -817,10 +842,6 @@ class MyCobotStatePublisher(Node):
             )
             return response
 
-        if self.stop_requested.is_set():
-            response.message = "Stop is latched; no command sent"
-            return response
-
         started = False
         try:
             with self.serial_mutex:
@@ -837,6 +858,12 @@ class MyCobotStatePublisher(Node):
                 response.message = "Robot is not powered on"
                 return response
             error_state = self._clear_planning_error(error_state)
+            if error_state != 0:
+                # Soft controller faults (e.g. 19 after a stop) often
+                # clear; retry once so calibration can continue.
+                with self.serial_mutex:
+                    self.robot.clear_error_information()
+                    error_state = self.robot.get_error_information()
             if error_state != 0:
                 response.message = (
                     f"Robot reports error code {error_state}"

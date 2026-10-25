@@ -10,7 +10,7 @@
     annotated_topic: "/overview_camera/yolo/annotated"
     detections_topic: "/overview_camera/yolo/detections"
 
-    confidence_threshold: 0.30
+    confidence_threshold: 0.25
     iou_threshold: 0.50
     image_size: 640
     device: "cpu"

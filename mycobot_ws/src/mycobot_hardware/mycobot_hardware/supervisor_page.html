@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>myCobot supervisor</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1c1915;
+      --muted: #5c564c;
+      --line: #d9d2c5;
+      --paper: #f6f3ec;
+      --card: #fffdf8;
+      --accent: #1f4b3a;
+      --accent-ink: #f4f7f4;
+      --stop: #8f1d1d;
+      --stop-ink: #fff8f6;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+    }
+
+    main {
+      max-width: 880px;
+      margin: 0 auto;
+      padding: 24px 20px 48px;
+    }
+
+    h1 { margin: 0 0 8px; font-size: 1.8rem; font-weight: 650; }
+    h2 { margin: 0; font-size: 1.15rem; }
+    p { margin: 0; line-height: 1.45; }
+
+    .notice, .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+    }
+
+    .notice { padding: 14px 16px; margin: 18px 0; color: var(--muted); }
+    .card { padding: 16px; margin-bottom: 12px; }
+
+    .row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+    }
+
+    .summary { color: var(--muted); margin-top: 6px; }
+    .meta { margin-top: 8px; font-size: 0.92rem; }
+
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    button, a.button {
+      border: 0;
+      border-radius: 999px;
+      padding: 8px 14px;
+      font: inherit;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    button:disabled { opacity: 0.45; cursor: default; }
+
+    .start { background: var(--accent); color: var(--accent-ink); }
+    .stop, .stop-all { background: var(--stop); color: var(--stop-ink); }
+    .open { background: #efe8da; color: var(--ink); }
+
+    .status {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #efe8da;
+      font-size: 0.85rem;
+    }
+
+    .running { background: #d9eadf; }
+    .exited, .stopping { background: #f3d6d2; }
+
+    pre {
+      margin: 10px 0 0;
+      padding: 10px 12px;
+      max-height: 180px;
+      overflow: auto;
+      background: #1c1915;
+      color: #f6f3ec;
+      border-radius: 10px;
+      font-size: 0.78rem;
+      line-height: 1.4;
+      white-space: pre-wrap;
+    }
+
+    .banner { margin-top: 12px; min-height: 1.2em; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>myCobot supervisor</h1>
+    <p class="summary">Start one mode. A second mode cannot open the serial port or reuse a page port.</p>
+    <div class="notice">
+      Stopping a mode asks that launch to shut down and sends the software stop.
+      It is not a substitute for the robot power switch.
+      Modes marked “moves the arm” enable physical motion.
+    </div>
+    <div class="actions" style="margin-bottom: 16px;">
+      <button class="stop-all" id="stop-all" type="button">Stop everything</button>
+    </div>
+    <div id="modes"></div>
+    <p class="banner" id="banner"></p>
+  </main>
+  <script>
+    const modes = document.getElementById("modes");
+    const banner = document.getElementById("banner");
+
+    function badge(mode) {
+      if (mode.status === "running") return "running";
+      if (mode.status === "stopping") return "stopping";
+      if (mode.status === "exited") return "exited " + mode.returncode;
+      if (mode.block_reason) return "blocked";
+      return "idle";
+    }
+
+    function pageHref(port) {
+      return location.protocol + "//" + location.hostname + ":" + port;
+    }
+
+    function render(state) {
+      modes.replaceChildren();
+      state.modes.forEach((mode) => {
+        const card = document.createElement("section");
+        card.className = "card";
+        const row = document.createElement("div");
+        row.className = "row";
+        const copy = document.createElement("div");
+        const title = document.createElement("h2");
+        title.textContent = mode.title;
+        const summary = document.createElement("p");
+        summary.className = "summary";
+        summary.textContent = mode.summary;
+        const meta = document.createElement("p");
+        meta.className = "meta";
+        const bits = [];
+        if (mode.moves_arm) bits.push("moves the arm");
+        if (mode.owns_serial) bits.push("owns the serial port");
+        if (!mode.owns_serial) bits.push("no serial port");
+        meta.textContent = bits.join(" · ");
+        const status = document.createElement("div");
+        status.className = "status " + mode.status;
+        status.textContent = badge(mode);
+        copy.append(title, summary, meta, status);
+        if (mode.block_reason && mode.status !== "running") {
+          const block = document.createElement("p");
+          block.className = "summary";
+          block.textContent = mode.block_reason;
+          copy.append(block);
+        }
+
+        const actions = document.createElement("div");
+        actions.className = "actions";
+        const start = document.createElement("button");
+        start.className = "start";
+        start.type = "button";
+        start.textContent = "Start";
+        start.disabled = mode.status === "running"
+          || mode.status === "stopping"
+          || Boolean(mode.block_reason);
+        start.addEventListener("click", () => startMode(mode));
+        actions.append(start);
+
+        if (mode.status === "running" || mode.status === "stopping") {
+          const stop = document.createElement("button");
+          stop.className = "stop";
+          stop.type = "button";
+          stop.textContent = "Stop";
+          stop.disabled = mode.status === "stopping";
+          stop.addEventListener("click", () => postStop({mode: mode.id}));
+          actions.append(stop);
+        }
+
+        if (mode.page_port && mode.status === "running") {
+          const open = document.createElement("a");
+          open.className = "button open";
+          open.href = pageHref(mode.page_port);
+          open.target = "_blank";
+          open.rel = "noopener";
+          open.textContent = "Open page";
+          actions.append(open);
+        }
+
+        row.append(copy, actions);
+        card.append(row);
+        if (mode.log && mode.log.length && mode.status !== "idle") {
+          const log = document.createElement("pre");
+          log.textContent = mode.log.join("\n");
+          card.append(log);
+        }
+        modes.append(card);
+      });
+    }
+
+    async function startMode(mode) {
+      let confirm = false;
+      if (mode.moves_arm) {
+        confirm = window.confirm(
+          mode.title + " will enable physical motion. The workspace must be clear."
+        );
+        if (!confirm) return;
+      }
+      await postJson("/api/start", {mode: mode.id, confirm: confirm});
+    }
+
+    async function postStop(body) {
+      await postJson("/api/stop", body);
+    }
+
+    async function postJson(path, body) {
+      banner.textContent = "";
+      try {
+        const response = await fetch(path, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(body),
+        });
+        const payload = await response.json();
+        banner.textContent = payload.message || "";
+      } catch (error) {
+        banner.textContent = String(error);
+      }
+      refresh();
+    }
+
+    async function refresh() {
+      try {
+        const response = await fetch("/api/state", {cache: "no-store"});
+        render(await response.json());
+      } catch (error) {
+        banner.textContent = String(error);
+      }
+    }
+
+    document.getElementById("stop-all").addEventListener("click", () => {
+      postStop({all: true});
+    });
+    refresh();
+    setInterval(refresh, 1000);
+  </script>
+</body>
+</html>

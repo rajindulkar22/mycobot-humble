@@ -1,0 +1,4 @@
+*.log
+*.jpg
+!aruco*.png
+__pycache__/

@@ -56,11 +56,11 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "use_wrist_guidance",
-                default_value="false",
+                default_value="true",
                 description=(
                     "When true, the wrist camera nudges during the "
-                    "vertical approach. Default false uses overview "
-                    "XY only (more reliable until wrist is tuned)."
+                    "vertical approach. Set false to use overview "
+                    "XY only."
                 ),
             ),
             LogInfo(
@@ -71,8 +71,8 @@ def generate_launch_description():
                     "already running. "
                     "Open http://<this-computer>:8092. "
                     "Overview finds the cap. "
-                    "Wrist guidance is off by default; "
-                    "set use_wrist_guidance:=true after /wrist looks correct."
+                    "Wrist guidance nudges during the descent. "
+                    "Set use_wrist_guidance:=false for overview XY only."
                 )
             ),
             IncludeLaunchDescription(

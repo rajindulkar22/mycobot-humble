@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-usb-cam \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m pip install --no-cache-dir "pymycobot==4.0.4"
+RUN python3 -m pip install --no-cache-dir "pymycobot==4.0.4" "packaging==24.2"
 
 RUN echo 'source /opt/ros/humble/setup.bash' >> /root/.bashrc && \
     echo 'if [ -f /root/mycobot_ws/install/setup.bash ]; then source /root/mycobot_ws/install/setup.bash; fi' >> /root/.bashrc

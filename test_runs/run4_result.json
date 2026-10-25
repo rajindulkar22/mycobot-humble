@@ -1,0 +1,33 @@
+{
+  "success": true,
+  "message": "Auto pick stopped. Unresolved: red_cap, black_cap",
+  "completed": 1,
+  "elapsed_s": 305.6,
+  "note": "Captured from live auto_task after the recording curl was aborted; pick_all had finished on the device.",
+  "reports": [
+    {
+      "class_name": "white_cap",
+      "success": true,
+      "message": "Pick and place completed",
+      "status": "COMPLETED",
+      "attempts": 3,
+      "last_failure": null
+    },
+    {
+      "class_name": "red_cap",
+      "success": false,
+      "message": "Place verify failed: cap still near the pick spot.",
+      "status": "DETECTED",
+      "attempts": 3,
+      "last_failure": "PLACE_FAILURE"
+    },
+    {
+      "class_name": "black_cap",
+      "success": false,
+      "message": "Grasp FAILURE_LID (jaw 94). Gripper stopped on the cap instead of around it: 98 -> 94",
+      "status": "DETECTED",
+      "attempts": 3,
+      "last_failure": "FAILURE_LID"
+    }
+  ]
+}
