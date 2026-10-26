@@ -44,6 +44,7 @@ def generate_launch_description():
     )
     enable_vision = LaunchConfiguration("enable_vision")
     use_wrist_guidance = LaunchConfiguration("use_wrist_guidance")
+    note_reader_url = LaunchConfiguration("note_reader_url")
     return LaunchDescription(
         [
             DeclareLaunchArgument(
@@ -52,6 +53,14 @@ def generate_launch_description():
                 description=(
                     "Start the overview camera, optional wrist camera, "
                     "and the trained detector."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "note_reader_url",
+                default_value="http://192.168.178.187:11434",
+                description=(
+                    "Laptop address for the sticky-note reader. "
+                    "Empty uses the local letter reader."
                 ),
             ),
             DeclareLaunchArgument(
@@ -136,6 +145,7 @@ def generate_launch_description():
                             use_wrist_guidance,
                             value_type=bool,
                         ),
+                        "note_reader_url": note_reader_url,
                     }
                 ],
             ),

@@ -876,6 +876,31 @@ class MyCobotStatePublisher(Node):
                 response.message = "Current coordinate feedback is invalid"
                 return response
 
+            with self.serial_mutex:
+                live_angles = self._usable_joint_degrees(
+                    self.robot.get_angles()
+                )
+                solution = None
+                if live_angles is not None:
+                    solution = self.robot.solve_inv_kinematics(
+                        coords, live_angles,
+                    )
+            if live_angles is None:
+                response.message = "Current joint feedback is invalid"
+                return response
+            # A table move may travel many degrees. Only the joint
+            # limits are checked here, not the small joint-step cap.
+            range_message = self._joint_range_message(solution)
+            if range_message is None:
+                response.message = (
+                    "No joint solution for this pose. "
+                    "The move was not sent."
+                )
+                return response
+            if range_message:
+                response.message = range_message
+                return response
+
             response.start_coords = start
             response.final_coords = start
             self.stop_requested.clear()
@@ -906,6 +931,7 @@ class MyCobotStatePublisher(Node):
                     updated = self._usable_coords(self.robot.get_coords())
                     moving = self.robot.is_moving()
                     updated_error = self.robot.get_error_information()
+                    live_angles = self.robot.get_angles()
                 if updated_error != 0:
                     with self.serial_mutex:
                         self.robot.stop()
@@ -913,6 +939,15 @@ class MyCobotStatePublisher(Node):
                     response.message = (
                         f"Controller reported error {updated_error}; "
                         "stop command sent"
+                    )
+                    return response
+                range_message = self._joint_range_message(live_angles)
+                if range_message:
+                    with self.serial_mutex:
+                        self.robot.stop()
+                    response.final_coords = final
+                    response.message = (
+                        f"{range_message}; stop command sent"
                     )
                     return response
                 if updated is None:
@@ -1038,6 +1073,24 @@ class MyCobotStatePublisher(Node):
                 return (
                     f"J{joint_id} movement {movement:.2f}° exceeds "
                     f"the {self.max_joint_step:.2f}° limit"
+                )
+        return ""
+
+    def _joint_range_message(self, angles):
+        """Return a limit error, '' when safe, or None when angles are unusable."""
+        usable = self._usable_joint_degrees(
+            list(angles) if isinstance(angles, (list, tuple)) else None
+        )
+        if usable is None:
+            return None
+        for joint_id, angle in enumerate(usable, start=1):
+            lower, upper = self.JOINT_LIMITS_DEGREES[joint_id]
+            safe_lower = lower + self.joint_limit_margin
+            safe_upper = upper - self.joint_limit_margin
+            if angle < safe_lower or angle > safe_upper:
+                return (
+                    f"J{joint_id} target {angle:.2f}° is outside "
+                    f"safe range [{safe_lower:.2f}°, {safe_upper:.2f}°]"
                 )
         return ""
 
@@ -1370,6 +1423,14 @@ class MyCobotStatePublisher(Node):
                 final_angles = usable
                 response.final_degrees = final_angles
                 self._store_measurement(final_angles)
+                range_message = self._joint_range_message(final_angles)
+                if range_message:
+                    with self.serial_mutex:
+                        self.robot.stop()
+                    response.message = (
+                        f"{range_message}; stop command sent"
+                    )
+                    return response
 
                 # Recheck after controller I/O so a concurrent stop takes
                 # priority over declaring successful completion.
@@ -1588,6 +1649,14 @@ class MyCobotStatePublisher(Node):
                 final_angle = usable[joint_id - 1]
                 response.final_degrees = final_angle
                 self._store_measurement(usable)
+                range_message = self._joint_range_message(usable)
+                if range_message:
+                    with self.serial_mutex:
+                        self.robot.stop()
+                    response.message = (
+                        f"{range_message}; stop command sent"
+                    )
+                    return response
 
                 if self.stop_requested.is_set():
                     response.message = (

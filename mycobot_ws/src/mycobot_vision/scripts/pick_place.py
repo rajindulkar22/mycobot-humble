@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Pick with overview for coarse aim, wrist camera for the vertical approach."""
 
+import base64
 import json
 import math
 import os
+import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -124,9 +128,10 @@ WRIST_MIN_CIRCULARITY = 0.72
 WRIST_MIN_FILL = 0.55
 WRIST_MIN_DIAMETER_PX = 36.0
 WRIST_MAX_DIAMETER_PX = 220.0
-# While a colour is locked, a blob far from that centre is ignored
-# so the ring cannot hop to a shadow or a split highlight.
-WRIST_LOCK_RADIUS_PX = 70.0
+# While a colour is locked, only a reading on that same disc is
+# kept. 70 px was about one cap across, so the ring could sit on
+# the table beside the cap and still count.
+WRIST_LOCK_RADIUS_PX = 28.0
 WRIST_LOCK_BLEND = 0.35
 WRIST_LOCK_MISSES = 4
 # During the vertical approach the overview reading is only a
@@ -170,6 +175,21 @@ OBSERVE_X_MM = 130.0
 OBSERVE_Y_MM = 130.0
 OBSERVE_Z_MM = 200.0
 OBSERVE_SETTLE_SECONDS = 1.5
+# One settled overview frame after the arm parks. The camera runs
+# faster than this; the extra time covers a late frame.
+NOTE_LOOK_SECONDS = 2.0
+# Pale yellow sticky notes on the white table. Tuned on the live
+# overview frame: three notes, each about 95 pixels square.
+NOTE_HUE_MIN = 15
+NOTE_HUE_MAX = 40
+NOTE_SAT_MIN = 40
+NOTE_SAT_MAX = 180
+NOTE_VAL_MIN = 140
+NOTE_MIN_AREA_FRAC = 0.008
+NOTE_MAX_AREA_FRAC = 0.08
+NOTE_MIN_SIDE_PX = 40
+NOTE_ASPECT_MIN = 0.70
+NOTE_ASPECT_MAX = 1.45
 # A colour fix may pull a loose box onto the disc, but it must not
 # walk off the yellow cross onto a cable or another cap.
 REFINE_MAX_PIXELS = 18.0
@@ -282,6 +302,7 @@ class PickPlace(Node):
         self.declare_parameter("observe_x_mm", OBSERVE_X_MM)
         self.declare_parameter("observe_y_mm", OBSERVE_Y_MM)
         self.declare_parameter("observe_z_mm", OBSERVE_Z_MM)
+        self.declare_parameter("note_reader_url", "")
 
         calibration_file = str(
             self.get_parameter("calibration_file").value
@@ -299,9 +320,9 @@ class PickPlace(Node):
         self._wrist_jpeg_encoded_at = 0.0
         self._wrist_frame = None
         self._wrist_frame_received = 0.0
-        self._wrist_lock = None
-        self._wrist_lock_class = None
-        self._wrist_lock_misses = 0
+        # One lock per colour, so red, black, and white each keep
+        # their own centre. A new colour does not clear the others.
+        self._wrist_locks = {}
         self._use_wrist_guidance = bool(
             self.get_parameter("use_wrist_guidance").value
         )
@@ -322,6 +343,9 @@ class PickPlace(Node):
             float(self.get_parameter("observe_y_mm").value),
             float(self.get_parameter("observe_z_mm").value),
         )
+        self._note_reader_url = str(
+            self.get_parameter("note_reader_url").value or ""
+        ).strip()
         self._tool_pose = None
         self._tool_pose_received = 0.0
         self._initial_pose = None
@@ -1503,7 +1527,7 @@ class PickPlace(Node):
         )
 
     def _drop_xy_for_class(self, class_name):
-        """Per-colour drop, falling back to the shared drop pose."""
+        """Saved colour spot. Placement reads the sticky note instead."""
         keys = COLOUR_DROP_KEYS.get(class_name)
         calib = self._calibration or {}
         wizard = self._wizard or {}
@@ -1528,6 +1552,19 @@ class PickPlace(Node):
             min(max(float(y_mm), min_y), max_y),
         )
 
+    def _note_reader(self):
+        """Return a laptop reader, or None to keep the local reader."""
+        url = self._note_reader_url
+        if not url:
+            return None
+
+        def reader(crop, _prepared):
+            text = vlm_read_note(crop, url)
+            self.get_logger().info(f"Laptop read a note as {text.strip()!r}.")
+            return text
+
+        return reader
+
     def _place_cap(
         self,
         class_name,
@@ -1537,8 +1574,41 @@ class PickPlace(Node):
         grasp_u=None,
         grasp_v=None,
     ):
-        """Carry to the colour drop, open, and verify the cap left."""
-        drop_x, drop_y = self._drop_xy_for_class(class_name)
+        """Park clear, read the matching sticky note, then drop there."""
+        status, body = self._go_observe()
+        if status != 200 or not body.get("success"):
+            return status, body
+        frame = self._wait_for_frame(NOTE_LOOK_SECONDS)
+        if frame is None:
+            return _error_payload(
+                "No overview image for the sticky notes. "
+                "The cap was not dropped."
+            )
+        if self._mapping is None:
+            return _error_payload(
+                self._mapping_error or "Table mapping is not ready."
+            )
+        note_uv, error = match_cap_note(
+            frame, class_name, reader=self._note_reader(),
+        )
+        if note_uv is None:
+            self.get_logger().warning(error)
+            return _error_payload(error)
+        raw_x, raw_y = project_table(
+            self._mapping, note_uv[0], note_uv[1],
+        )
+        label = CAP_CLASSES.get(class_name, "matching")
+        if not in_workspace(raw_x, raw_y):
+            return _error_payload(
+                f"The {label} note at {raw_x:.0f}, {raw_y:.0f} mm "
+                "is outside the arm's reach. The cap was not dropped."
+            )
+        drop_x, drop_y = self._clamp_drop_xy(raw_x, raw_y)
+        self.get_logger().info(
+            f"Sticky note for {label} at "
+            f"{drop_x:.1f}, {drop_y:.1f} mm "
+            f"(pixel {note_uv[0]:.0f}, {note_uv[1]:.0f})."
+        )
         steps = (
             (
                 "Move above the drop",
@@ -1834,7 +1904,9 @@ class PickPlace(Node):
             frame = self._wait_for_wrist_frame()
             if frame is None:
                 return 200, {"success": True}, x_mm, y_mm, saw_cap
-            center = self._track_wrist_center(frame, class_name, blend=False)
+            center = self._track_wrist_center(
+                frame, class_name, blend=False, follow_motion=True,
+            )
             if center is None:
                 return 200, {"success": True}, x_mm, y_mm, saw_cap
             saw_cap = True
@@ -2262,10 +2334,12 @@ class PickPlace(Node):
                 return None
             time.sleep(0.05)
 
-    def _wait_for_frame(self):
+    def _wait_for_frame(self, timeout_seconds=None):
         """Return a camera frame captured after this call starts."""
+        if timeout_seconds is None:
+            timeout_seconds = ALIGN_FRAME_WAIT_SECONDS
         started = time.monotonic()
-        deadline = started + ALIGN_FRAME_WAIT_SECONDS
+        deadline = started + float(timeout_seconds)
         while True:
             with self._lock:
                 received = self._frame_received
@@ -2643,48 +2717,99 @@ class PickPlace(Node):
             self._jpeg = encoded.tobytes()
             self._jpeg_encoded_at = now
 
-    def _track_wrist_center(self, image, class_name, blend=True):
-        """Return a steady wrist centre for one cap colour.
+    def _same_locked_cap(self, state, measured, wide):
+        """True when a new reading is still the locked disc."""
+        jump = math.hypot(
+            float(measured[0]) - float(state["u"]),
+            float(measured[1]) - float(state["v"]),
+        )
+        radius = float(state.get("radius") or 0.0)
+        limit = WRIST_LOCK_RADIUS_PX
+        if wide and radius > 1.0:
+            # A descent nudge moves the cap by more than the still-frame
+            # lock, but not onto a different object.
+            limit = max(limit, 1.15 * radius)
+        if jump > limit:
+            return False
+        if radius > 1.0 and len(measured) > 2 and float(measured[2]) > 1.0:
+            ratio = float(measured[2]) / radius
+            if ratio < 0.65 or ratio > 1.45:
+                return False
+        return True
 
-        A new colour drops the previous lock. While locked, only a
-        blob near the last centre is accepted, and that centre is
-        blended so glare does not walk the ring. blend=False returns
-        the fresh reading, since a lagging centre hides how far a
-        nudge really moved the cap.
+    def _track_wrist_center(
+        self, image, class_name, blend=True, keep_last=False, follow_motion=False,
+    ):
+        """Return the wrist centre for one cap colour.
+
+        Each colour has its own lock. A new reading has to land on that
+        same disc, so the ring cannot walk onto the table. blend is off
+        for the page and the descent: the drawn point is the fresh
+        centre. keep_last holds that centre through a short miss, then
+        drops it. follow_motion lets one nudge shift the disc without
+        accepting a different size of object.
         """
         name = str(class_name or "").casefold()
+        if name not in CAP_CLASSES:
+            return None
         with self._lock:
-            same = self._wrist_lock_class == name and self._wrist_lock is not None
-            hint = self._wrist_lock if same else None
+            state = self._wrist_locks.get(name)
+            hint = None if state is None else (state["u"], state["v"])
         measured = wrist_cap_center(image, name, hint=hint)
-        with self._lock:
-            if measured is None:
-                if self._wrist_lock_class == name:
-                    self._wrist_lock_misses += 1
-                    if self._wrist_lock_misses >= WRIST_LOCK_MISSES:
-                        self._wrist_lock = None
-                        self._wrist_lock_class = None
-                return None
-            if (
-                blend
-                and self._wrist_lock is not None
-                and self._wrist_lock_class == name
+        if (
+            measured is not None
+            and state is not None
+            and not self._same_locked_cap(state, measured, wide=False)
+        ):
+            measured = None
+        if (
+            measured is None
+            and hint is not None
+            and follow_motion
+            and state is not None
+        ):
+            candidate = wrist_cap_center(image, name, hint=None)
+            if candidate is not None and self._same_locked_cap(
+                state, candidate, wide=True,
             ):
+                measured = candidate
+        with self._lock:
+            state = self._wrist_locks.get(name)
+            if measured is None:
+                if state is None:
+                    return None
+                state["misses"] = int(state.get("misses") or 0) + 1
+                if state["misses"] >= WRIST_LOCK_MISSES:
+                    self._wrist_locks.pop(name, None)
+                    return None
+                if keep_last:
+                    return (state["u"], state["v"])
+                return None
+            if blend and state is not None:
                 kept_u = (
                     WRIST_LOCK_BLEND * float(measured[0])
-                    + (1.0 - WRIST_LOCK_BLEND) * self._wrist_lock[0]
+                    + (1.0 - WRIST_LOCK_BLEND) * state["u"]
                 )
                 kept_v = (
                     WRIST_LOCK_BLEND * float(measured[1])
-                    + (1.0 - WRIST_LOCK_BLEND) * self._wrist_lock[1]
+                    + (1.0 - WRIST_LOCK_BLEND) * state["v"]
                 )
             else:
                 kept_u = float(measured[0])
                 kept_v = float(measured[1])
-            self._wrist_lock = (kept_u, kept_v)
-            self._wrist_lock_class = name
-            self._wrist_lock_misses = 0
-            return self._wrist_lock
+            if len(measured) > 2 and float(measured[2]) > 1.0:
+                radius = float(measured[2])
+            elif state is not None:
+                radius = float(state.get("radius") or 0.0)
+            else:
+                radius = 0.0
+            self._wrist_locks[name] = {
+                "u": kept_u,
+                "v": kept_v,
+                "misses": 0,
+                "radius": radius,
+            }
+            return (kept_u, kept_v)
 
     def _on_wrist_image(self, message):
         """Keep the latest wrist frame and a marked JPEG for the page."""
@@ -2729,34 +2854,28 @@ class PickPlace(Node):
             (80, 80, 80),
             1,
         )
-        class_name = self._pick_class or self._target_class
-        center = self._track_wrist_center(image, class_name)
-        label = class_name
-        if center is None:
-            for other in ("red_cap", "black_cap", "white_cap"):
-                if str(other) == str(class_name or "").casefold():
-                    continue
-                found = self._track_wrist_center(image, other)
-                if found is None:
-                    continue
-                center = found
-                label = other
-                break
-        if center is not None:
+        # Each colour keeps its own centre. The arm still follows
+        # only the cap being picked; that ring is drawn thicker.
+        active = str(self._pick_class or self._target_class or "").casefold()
+        for class_name in CAP_CLASSES:
+            center = self._track_wrist_center(
+                image, class_name, blend=False, keep_last=True,
+            )
+            if center is None:
+                continue
+            chosen = class_name == active
+            point = (int(round(center[0])), int(round(center[1])))
             cv2.circle(
                 marked,
-                (int(round(center[0])), int(round(center[1]))),
-                8,
+                point,
+                10 if chosen else 8,
                 (0, 255, 0),
-                2,
+                2 if chosen else 1,
             )
             cv2.putText(
                 marked,
-                str(label or ""),
-                (
-                    int(round(center[0])) + 10,
-                    max(16, int(round(center[1])) - 8),
-                ),
+                CAP_CLASSES[class_name],
+                (point[0] + 10, max(16, point[1] - 8)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.45,
                 (0, 255, 0),
@@ -3325,20 +3444,149 @@ def wrist_cap_center(image, class_name, hint=None):
         center = _red_center(roi, free, hint=local_hint)
     if center is None:
         return None
-    return center[0] + left, center[1]
+    return center[0] + left, center[1], float(center[2])
+
+
+def _cap_disc_and_ring(image, center_u, center_v, radius):
+    """Return the cap interior and the visible table ring around it."""
+    height, width = image.shape[:2]
+    if radius < 8.0:
+        return None
+    pixel_u = int(round(center_u))
+    pixel_v = int(round(center_v))
+    if pixel_u < 0 or pixel_v < 0 or pixel_u >= width or pixel_v >= height:
+        return None
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    rows, cols = np.ogrid[:height, :width]
+    distance = np.hypot(cols - center_u, rows - center_v)
+    disc = distance <= radius * 0.85
+    ring = (distance >= radius * 1.08) & (distance <= radius * 1.45)
+    if int(np.count_nonzero(disc)) < 40 or int(np.count_nonzero(ring)) < 40:
+        return None
+    return gray, hsv, disc, ring, distance
+
+
+def _black_cap_disc(image, raw_mask, center_u, center_v, radius):
+    """True for a filled black bottle cap on the pale table.
+
+    Dark letters on a silver cap, and dark objects on the wooden
+    floor, are round enough to reach this test. The cap is a dark
+    disc with pale plastic around it.
+    """
+    regions = _cap_disc_and_ring(image, center_u, center_v, radius)
+    if regions is None:
+        return False
+    gray, hsv, disc, ring, distance = regions
+    circle = distance <= radius
+    circle_count = int(np.count_nonzero(circle))
+    if circle_count < 40:
+        return False
+    raw_fill = float(np.count_nonzero(raw_mask[circle])) / float(circle_count)
+    if raw_fill < 0.50:
+        return False
+    if float(np.median(gray[disc])) > 25.0:
+        return False
+    if float(np.median(gray[ring])) - float(np.median(gray[disc])) < 50.0:
+        return False
+    if float(np.median(hsv[:, :, 1][ring])) > 80.0:
+        return False
+    return True
 
 
 def _red_center(image, free_mask=None, hint=None):
-    """Return the centre of the roundest red region."""
+    """Return the centre of a red bottle cap on the pale table.
+
+    The white logo splits a colour blob into a crescent, and a hand
+    above the cap is red too. A circle counts when its inside is red
+    and the plastic around it is pale, which a hand, a cable, and the
+    wooden floor are not.
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    low = cv2.inRange(hsv, (0, 90, 50), (12, 255, 255))
-    high = cv2.inRange(hsv, (168, 90, 50), (180, 255, 255))
-    mask = cv2.bitwise_or(low, high)
+    hue, saturation, _value = cv2.split(hsv)
+    red = ((hue <= 15) | (hue >= 165)) & (saturation >= 70)
     if free_mask is not None:
-        mask = cv2.bitwise_and(mask, free_mask)
-    return _round_blob_center(
-        mask, image.shape, minimum_area=80.0, hint=hint,
+        red = red & (free_mask > 0)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    circles = cv2.HoughCircles(
+        blurred,
+        cv2.HOUGH_GRADIENT,
+        1.2,
+        40,
+        param1=80,
+        param2=18,
+        minRadius=22,
+        maxRadius=80,
     )
+    if circles is None:
+        return None
+    height, width = gray.shape[:2]
+    candidates = []
+    for raw_u, raw_v, radius in circles[0]:
+        center_u = float(raw_u)
+        center_v = float(raw_v)
+        radius = float(radius)
+        pixel_u = int(round(center_u))
+        pixel_v = int(round(center_v))
+        if pixel_u < 0 or pixel_v < 0 or pixel_u >= width or pixel_v >= height:
+            continue
+        if free_mask is not None and free_mask[pixel_v, pixel_u] == 0:
+            continue
+        if hint is not None:
+            hint_u, hint_v = hint
+            if math.hypot(center_u - hint_u, center_v - hint_v) > WRIST_LOCK_RADIUS_PX:
+                continue
+        y0 = max(0, int(center_v - radius * 1.6))
+        y1 = min(height, int(center_v + radius * 1.6) + 1)
+        x0 = max(0, int(center_u - radius * 1.6))
+        x1 = min(width, int(center_u + radius * 1.6) + 1)
+        rows, cols = np.ogrid[y0:y1, x0:x1]
+        distance = np.hypot(cols - center_u, rows - center_v)
+        disc = distance <= radius * 0.80
+        ring = (distance >= radius * 1.12) & (distance <= radius * 1.50)
+        disc_count = int(np.count_nonzero(disc))
+        ring_count = int(np.count_nonzero(ring))
+        if disc_count < 80 or ring_count < 40:
+            continue
+        red_fraction = float(np.count_nonzero(red[y0:y1, x0:x1][disc])) / float(disc_count)
+        if red_fraction < 0.70:
+            continue
+        # Wood is red enough to fill a circle, but it is duller than
+        # the plastic cap. The white ledge behind the floor is pale,
+        # so the table-ring test alone accepts it.
+        disc_saturation = float(np.median(saturation[y0:y1, x0:x1][disc]))
+        if disc_saturation < 210.0:
+            continue
+        ring_saturation = float(np.median(saturation[y0:y1, x0:x1][ring]))
+        ring_gray = float(np.median(gray[y0:y1, x0:x1][ring]))
+        disc_gray = float(np.median(gray[y0:y1, x0:x1][disc]))
+        # The table around a cap is pale. Wood and skin are not.
+        if ring_saturation > 45.0 or ring_gray < 120.0:
+            continue
+        if ring_gray - disc_gray < 30.0:
+            continue
+        inner = distance <= radius * 0.35
+        if int(np.count_nonzero(inner)) < 15:
+            continue
+        inner_saturation = float(np.median(saturation[y0:y1, x0:x1][inner]))
+        candidates.append((
+            float(radius),
+            inner_saturation,
+            center_u,
+            center_v,
+        ))
+    if not candidates:
+        return None
+    # The white logo sits in the middle. A circle shifted onto the
+    # red plastic has a red centre, so prefer a pale centre and then
+    # the largest rim. A solid red disc has no pale centre and falls
+    # back to the largest circle that still passed.
+    pale = [item for item in candidates if item[1] < 90.0]
+    pool = pale or candidates
+    pool.sort(key=lambda item: item[0], reverse=True)
+    chosen = pool[0]
+    return chosen[2], chosen[3], chosen[0]
 
 
 def _round_dark_center(image, free_mask=None, hint=None):
@@ -3353,8 +3601,12 @@ def _round_dark_center(image, free_mask=None, hint=None):
     mask = np.uint8(gray < threshold) * np.uint8(255)
     if free_mask is not None:
         mask = cv2.bitwise_and(mask, free_mask)
+
+    def accept(center_u, center_v, radius):
+        return _black_cap_disc(image, mask, center_u, center_v, radius)
+
     return _round_blob_center(
-        mask, image.shape, minimum_area=180.0, hint=hint,
+        mask, image.shape, minimum_area=180.0, hint=hint, accept=accept,
     )
 
 
@@ -3409,6 +3661,7 @@ def _pale_center(image, free_mask=None, hint=None):
         bottom = min(height, pixel_v + reach + 1)
         window_gray = gray[top:bottom, left:right]
         window_red = red[top:bottom, left:right]
+        window_hsv = hsv[top:bottom, left:right]
         rows, cols = np.ogrid[top:bottom, left:right]
         distance = np.hypot(cols - center_u, rows - center_v)
         disc = distance <= radius * 0.85
@@ -3424,16 +3677,47 @@ def _pale_center(image, free_mask=None, hint=None):
         if int(np.count_nonzero(ring)) < 40:
             continue
         disc_median = float(np.median(window_gray[disc]))
+        ring_median = float(np.median(window_gray[ring]))
         # A black cap is far darker than a silver lid in shadow.
-        if disc_median < 28.0:
+        # A bright table circle is not a lid either.
+        if disc_median < 28.0 or disc_median > 110.0:
             continue
-        if float(np.median(window_gray[ring])) - disc_median < 8.0:
+        if ring_median - disc_median < 22.0:
+            continue
+        # Wood and the red mat are saturated. The lid is grey plastic.
+        plain = disc & (window_red == 0)
+        if int(np.count_nonzero(plain)) < 40:
+            continue
+        if float(np.median(window_hsv[plain][:, 1])) > 120.0:
+            continue
+        if float(np.median(window_hsv[ring][:, 1])) > 90.0:
+            continue
+        # The red print is the logo in the middle of the lid. Red at
+        # the rim is a neighbouring object, not the cap.
+        red_rows, red_cols = np.where(disc & (window_red > 0))
+        if len(red_cols) == 0:
+            continue
+        logo_offset = math.hypot(
+            float(np.mean(red_cols)) + left - center_u,
+            float(np.mean(red_rows)) + top - center_v,
+        ) / radius
+        if logo_offset > 0.40:
+            continue
+        inner = distance <= radius * 0.45
+        edge = (distance >= radius * 0.70) & disc
+        inner_count = int(np.count_nonzero(inner))
+        edge_count = int(np.count_nonzero(edge))
+        if inner_count < 20 or edge_count < 20:
+            continue
+        inner_red = float(np.count_nonzero(window_red[inner])) / float(inner_count)
+        edge_red = float(np.count_nonzero(window_red[edge])) / float(edge_count)
+        if inner_red < 0.15 or edge_red > 0.12:
             continue
         if best is None or print_fraction > best[0]:
-            best = (print_fraction, center_u, center_v)
+            best = (print_fraction, center_u, center_v, radius)
     if best is None:
         return None
-    return best[1], best[2]
+    return best[1], best[2], best[3]
 
 
 def _prepare_blob_mask(mask):
@@ -3444,7 +3728,7 @@ def _prepare_blob_mask(mask):
     return cv2.morphologyEx(closed, cv2.MORPH_OPEN, open_kernel)
 
 
-def _round_blob_center(mask, shape, minimum_area=120.0, hint=None):
+def _round_blob_center(mask, shape, minimum_area=120.0, hint=None, accept=None):
     """Return the enclosing-circle centre of the round cap blob."""
     mask = _prepare_blob_mask(mask)
     contours, _hierarchy = cv2.findContours(
@@ -3458,30 +3742,42 @@ def _round_blob_center(mask, shape, minimum_area=120.0, hint=None):
         area = cv2.contourArea(contour)
         if area < minimum_area or area > max_area:
             continue
-        perimeter = cv2.arcLength(contour, True)
-        if perimeter < 1.0:
+        # The logo bites a crescent out of the colour mask. The
+        # enclosing circle of that crescent sits on the printed side.
+        # The convex hull restores the middle of the round cap.
+        hull = cv2.convexHull(contour)
+        hull_area = float(cv2.contourArea(hull))
+        perimeter = cv2.arcLength(hull, True)
+        if perimeter < 1.0 or hull_area < 1.0:
             continue
-        circularity = 4.0 * math.pi * area / (perimeter * perimeter)
+        circularity = 4.0 * math.pi * hull_area / (perimeter * perimeter)
         if circularity < WRIST_MIN_CIRCULARITY:
             continue
-        (center_u, center_v), radius = cv2.minEnclosingCircle(contour)
+        (center_u, center_v), radius = cv2.minEnclosingCircle(hull)
         if radius < 1.0:
             continue
         diameter = 2.0 * float(radius)
         if diameter < WRIST_MIN_DIAMETER_PX or diameter > WRIST_MAX_DIAMETER_PX:
             continue
-        fill = area / (math.pi * float(radius) * float(radius))
+        fill = hull_area / (math.pi * float(radius) * float(radius))
         if fill < WRIST_MIN_FILL:
             continue
-        _box_center, size, _angle = cv2.minAreaRect(contour)
+        _box_center, size, _angle = cv2.minAreaRect(hull)
         short_side = min(float(size[0]), float(size[1]))
         long_side = max(float(size[0]), float(size[1]))
-        if short_side < 10.0 or long_side / max(short_side, 1e-6) > 1.40:
+        # A finger can hide one side of the cap. The hull is then a
+        # thick segment, still far rounder than a cable.
+        if short_side < 10.0 or long_side / max(short_side, 1e-6) > 1.75:
+            continue
+        if accept is not None and not accept(
+            float(center_u), float(center_v), float(radius),
+        ):
             continue
         candidates.append((
             float(center_u),
             float(center_v),
             circularity * math.sqrt(area),
+            float(radius),
         ))
     if not candidates:
         return None
@@ -3495,7 +3791,7 @@ def _round_blob_center(mask, shape, minimum_area=120.0, hint=None):
             return None
         candidates = near
     candidates.sort(key=lambda item: item[2], reverse=True)
-    return candidates[0][0], candidates[0][1]
+    return candidates[0][0], candidates[0][1], candidates[0][3]
 
 
 def _largest_blob_center(mask, minimum_area):
@@ -4671,6 +4967,256 @@ def gripper_beside_cap(image, cap_u, cap_v):
     if best is None:
         return None
     return best[1], best[2]
+
+
+def find_yellow_notes(image):
+    """Return yellow sticky-note boxes, left to right.
+
+    Each note is a dict with pixel centre u, v and the box x, y, w, h.
+    """
+    if image is None or image.size == 0:
+        return []
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(
+        hsv,
+        (NOTE_HUE_MIN, NOTE_SAT_MIN, NOTE_VAL_MIN),
+        (NOTE_HUE_MAX, NOTE_SAT_MAX, 255),
+    )
+    kernel = np.ones((5, 5), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    mask = cv2.morphologyEx(
+        mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8),
+    )
+    contours, _hierarchy = cv2.findContours(
+        mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE,
+    )
+    image_area = float(image.shape[0] * image.shape[1])
+    notes = []
+    for contour in contours:
+        area = float(cv2.contourArea(contour))
+        if area < NOTE_MIN_AREA_FRAC * image_area:
+            continue
+        if area > NOTE_MAX_AREA_FRAC * image_area:
+            continue
+        x, y, width, height = cv2.boundingRect(contour)
+        if width < NOTE_MIN_SIDE_PX or height < NOTE_MIN_SIDE_PX:
+            continue
+        aspect = float(width) / float(height)
+        if aspect < NOTE_ASPECT_MIN or aspect > NOTE_ASPECT_MAX:
+            continue
+        if area < 0.55 * float(width * height):
+            continue
+        notes.append({
+            "u": float(x) + float(width) / 2.0,
+            "v": float(y) + float(height) / 2.0,
+            "x": int(x),
+            "y": int(y),
+            "w": int(width),
+            "h": int(height),
+        })
+    notes.sort(key=lambda note: note["u"])
+    return notes
+
+
+def prepare_note_ink(crop):
+    """Return black writing on white, or None when the note has no ink."""
+    if crop is None or crop.size == 0 or crop.ndim != 3:
+        return None
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    median = float(np.median(gray))
+    dark = gray < (median - 35.0)
+    not_colored = hsv[:, :, 1] < 140
+    mask = np.where(dark & not_colored, 255, 0).astype(np.uint8)
+    count, labels, stats, _centroids = cv2.connectedComponentsWithStats(
+        mask, 8,
+    )
+    limit = max(180, int(0.12 * crop.shape[0] * crop.shape[1]))
+    kept = np.zeros_like(mask)
+    ink_pixels = 0
+    for label in range(1, count):
+        area = int(stats[label, cv2.CC_STAT_AREA])
+        if area < 8 or area > limit:
+            continue
+        kept[labels == label] = 255
+        ink_pixels += area
+    if ink_pixels < 12:
+        return None
+    ink = cv2.bitwise_not(kept)
+    ink = cv2.resize(
+        ink, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_NEAREST,
+    )
+    return cv2.copyMakeBorder(
+        ink, 12, 12, 12, 12, cv2.BORDER_CONSTANT, value=255,
+    )
+
+
+def tesseract_read(image):
+    """Read one line of letters. Empty when tesseract is missing."""
+    if image is None or getattr(image, "size", 0) == 0:
+        return ""
+    success, encoded = cv2.imencode(".png", image)
+    if not success:
+        return ""
+    try:
+        completed = subprocess.run(
+            [
+                "tesseract",
+                "stdin",
+                "stdout",
+                "--psm",
+                "7",
+                "-c",
+                "tessedit_char_whitelist="
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+            ],
+            input=encoded.tobytes(),
+            capture_output=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return completed.stdout.decode("utf-8", errors="replace")
+
+
+def _edit_distance(left, right):
+    """Return the letter edits between two short words."""
+    previous = list(range(len(right) + 1))
+    for index, character in enumerate(left, 1):
+        current = [index]
+        for other_index, other in enumerate(right, 1):
+            current.append(min(
+                current[-1] + 1,
+                previous[other_index] + 1,
+                previous[other_index - 1] + (character != other),
+            ))
+        previous = current
+    return previous[-1]
+
+
+def classify_note_word(text):
+    """Map OCR text to red, black, or white. Uncertain text is None."""
+    letters = "".join(
+        character for character in str(text or "").upper()
+        if character.isalpha()
+    )
+    targets = ("RED", "BLACK", "WHITE")
+    if not letters:
+        return None
+    if letters in targets:
+        return letters.lower()
+    contained = [word for word in targets if word in letters]
+    if len(contained) == 1 and len(letters) <= len(contained[0]) + 2:
+        return contained[0].lower()
+    scores = sorted(
+        (_edit_distance(letters, word), word) for word in targets
+    )
+    if scores[0][0] <= 1 and scores[1][0] >= scores[0][0] + 2:
+        return scores[0][1].lower()
+    return None
+
+
+NOTE_VLM_MODEL = "hf.co/Qwen/Qwen3-VL-2B-Instruct-GGUF"
+NOTE_VLM_PROMPT = (
+    "Look at this sticky note. Reply with only RED, WHITE, BLACK, "
+    "or UNREADABLE."
+)
+
+
+class NoteReaderError(Exception):
+    """The laptop could not be asked what a note says."""
+
+
+def vlm_read_note(crop, url, model=NOTE_VLM_MODEL, timeout=60):
+    """Ask the laptop vision model what one note crop says.
+
+    Returns the reply text. Raises NoteReaderError when the laptop
+    cannot be reached. The crop's position stays with the caller.
+    """
+    if crop is None or getattr(crop, "size", 0) == 0:
+        return ""
+    success, encoded = cv2.imencode(
+        ".jpg", crop, [int(cv2.IMWRITE_JPEG_QUALITY), 90],
+    )
+    if not success:
+        return ""
+    image = base64.b64encode(encoded.tobytes()).decode("ascii")
+    body = json.dumps({
+        "model": model,
+        "stream": False,
+        "messages": [{
+            "role": "user",
+            "content": NOTE_VLM_PROMPT,
+            "images": [image],
+        }],
+    }).encode("utf-8")
+    endpoint = str(url).rstrip("/") + "/api/chat"
+    request = urllib.request.Request(
+        endpoint,
+        data=body,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as error:
+        raise NoteReaderError(
+            "The laptop note reader is not reachable"
+        ) from error
+    message = payload.get("message") or {}
+    return str(message.get("content") or "")
+
+
+def read_note_label(crop, reader=None):
+    """Return red, black, or white for one note crop."""
+    prepared = prepare_note_ink(crop)
+    if reader is None:
+        if prepared is None:
+            return None
+        text = tesseract_read(prepared)
+    else:
+        text = reader(crop, prepared)
+    return classify_note_word(text)
+
+
+def match_cap_note(image, class_name, reader=None):
+    """Return ((u, v), None) or (None, reason the cap was not dropped)."""
+    wanted = CAP_CLASSES.get(class_name)
+    if wanted is None:
+        return None, "Unknown cap color. The cap was not dropped."
+    notes = find_yellow_notes(image)
+    if not notes:
+        return None, (
+            "No yellow sticky notes are visible. "
+            "The cap was not dropped."
+        )
+    by_color = {}
+    for note in notes:
+        y0 = max(int(note["y"]), 0)
+        x0 = max(int(note["x"]), 0)
+        y1 = min(y0 + int(note["h"]), image.shape[0])
+        x1 = min(x0 + int(note["w"]), image.shape[1])
+        crop = image[y0:y1, x0:x1]
+        try:
+            label = read_note_label(crop, reader=reader)
+        except NoteReaderError as error:
+            return None, f"{error}. The cap was not dropped."
+        if label is None:
+            continue
+        if label in by_color:
+            return None, (
+                f"Two sticky notes both read as {label}. "
+                "The cap was not dropped."
+            )
+        by_color[label] = (float(note["u"]), float(note["v"]))
+    point = by_color.get(wanted)
+    if point is None:
+        return None, (
+            f"The {wanted} sticky note is not readable. "
+            "The cap was not dropped."
+        )
+    return point, None
 
 
 def _cap_class(class_name):

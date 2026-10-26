@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-sensor-msgs \
     ros-humble-std-srvs \
     ros-humble-usb-cam \
+    tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m pip install --no-cache-dir "pymycobot==4.0.4" "packaging==24.2"
