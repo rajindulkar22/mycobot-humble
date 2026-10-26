@@ -9,6 +9,9 @@ the camera position and moves the arm.
 Physical motion is off until a launch turns a gate on. The pick
 launch is the one that moves the real arm.
 
+The goal, what was achieved, and which calibration method won are in
+[docs/project_description.md](docs/project_description.md).
+
 ## Phase status
 
 | Phase | What it added | Status |
