@@ -215,9 +215,12 @@ cap. The arm then lifts to 150 mm.
 ### 6. Dropping on the written note
 
 Fixed colour spots in `table_calibration.yaml` are not used for the
-drop. After the lift, the arm parks again and the overview looks for
-yellow notes (hue 15–40, nearly square, about 95 px on the tested
-frame). Each crop is sent alone.
+drop. At the start of the run, while the notes are still empty, the
+overview looks for yellow notes (hue 15–40, nearly square, about 95 px
+on the tested frame). Each crop is sent alone. Those pixels are kept
+for every drop in the run, so a cap already sitting on a note does not
+hide the word from the next cap. Pick All reads them again, which is
+how a shuffled table is picked up.
 
 The laptop is asked:
 
@@ -523,21 +526,21 @@ its own process. It does not change the file.
 | `ollama serve` address already in use | A server is already up | Use that server. Do not start a second one |
 | Jetson `POST /api/chat` returns 404 | The listening server has no model | `ollama list` in that environment, pull again if the model is missing |
 | First note takes a long time | The model is loading, about 1.5 GB and about 15 s | Wait. Do not close the serve window. The reader allows 60 s |
-| Log says the color, then the gripper opens at 130, 130, 200 | The note pixel projects outside X 50–280 or Y −200–200. The place is refused, and the failed-pick path then opens the gripper at the park | Move that note into the calibrated, reachable band. A black note to the right of a red note at about X = 254 mm crosses 280 mm |
+| Log says the color, then the cap is still held at the park | The note pixel projects outside X 50–280 or Y −200–200, so the place is refused and the jaws stay closed | Move that note into the calibrated, reachable band. A black note to the right of a red note at about X = 254 mm crosses 280 mm |
 | Cap opens near the table but misses the paper | The word was right. The click fit does not cover the bottom of the picture. Tested notes sat near pixel `v` 314. The clicks sit near `v` 90–190 | Put the notes in the same image band as the fit clicks, or add fit clicks on the notes and accept again |
 | Two notes read as the same word | The drop is refused on purpose | One note per color. A second BLACK note will not take the second black cap |
 | `UNREADABLE` | The crop was not one of the three words | Rewrite the note as a single word: RED, WHITE, or BLACK |
 
 ## Known limits
 
+- With the notes inside the calibrated patch and inside X = 280 mm,
+  the cap lands on the matching paper.
 - The wrist camera corrects the pick. It does not correct the drop.
-- Notes outside the clicked pixel band get a guessed millimetre point.
-  On the tested table the red note at pixel 278, 314 was inside the
-  box (about 254, −78 mm) and still missed the paper. The black note,
-  further right, was outside X = 280 mm, so the arm never started
-  that move.
-- A refused place still ends in the failed-pick cleanup, which opens
-  the gripper. That is why a black miss drops the cap at the park.
+  An earlier note row near pixel `v` 314, below clicks at `v` 90–190,
+  missed: red opened at about 254, −78 mm off the paper, and the
+  black note was past X = 280 mm so the arm never started that move.
+- A refused place leaves the cap in the jaws and parks. The gripper
+  is not opened at 130, 130, 200 mm.
 - One cap of each color. Two black caps share one BLACK note, and
   the detector only tracks one of them.
 - Ollama is a foreground process. It does not survive a closed

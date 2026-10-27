@@ -185,6 +185,9 @@ NOTE_HUE_MAX = 40
 NOTE_SAT_MIN = 40
 NOTE_SAT_MAX = 180
 NOTE_VAL_MIN = 140
+# A row of touching notes is more saturated than the pale table.
+# The loose mask glues that row into one blob and then rejects it.
+NOTE_ROW_SAT_MIN = 80
 NOTE_MIN_AREA_FRAC = 0.008
 NOTE_MAX_AREA_FRAC = 0.08
 NOTE_MIN_SIDE_PX = 40
@@ -346,6 +349,9 @@ class PickPlace(Node):
         self._note_reader_url = str(
             self.get_parameter("note_reader_url").value or ""
         ).strip()
+        # Color -> pixel from one clean look. Later drops reuse it so a
+        # cap already sitting on a note cannot hide that word.
+        self._note_targets = {}
         self._tool_pose = None
         self._tool_pose_received = 0.0
         self._initial_pose = None
@@ -1060,6 +1066,14 @@ class PickPlace(Node):
                 return _error_payload(
                     f"The {label} cap is not in view from the parking pose."
                 )
+            error = self._remember_note_targets(replace=False)
+            if error:
+                return _error_payload(error)
+            if label not in self._note_targets:
+                return _error_payload(
+                    f"The {label} sticky note is not readable. "
+                    "The cap was not dropped."
+                )
             self._pick_class = chosen
             track = CapTrack(class_name=chosen)
             status, body = self._run_pick_with_retries(track)
@@ -1068,6 +1082,9 @@ class PickPlace(Node):
                 return status, body
             if _stopped_by_user(body):
                 return status, body
+            # A refused note must not open the jaws at the park.
+            if body.get("grasp_held"):
+                return self._return_holding(status, body)
             return self._fail_and_return(status, body)
         finally:
             self._busy = False
@@ -1099,6 +1116,9 @@ class PickPlace(Node):
             if status != 200 or not body.get("success"):
                 return status, body
             self._initial_pose = self._observe_pose()
+            error = self._remember_note_targets(replace=True)
+            if error:
+                return _error_payload(error)
             reports = []
             idle_passes = 0
             while True:
@@ -1110,6 +1130,14 @@ class PickPlace(Node):
                     break
                 self._pick_class = track.class_name
                 label = CAP_CLASSES.get(track.class_name, track.class_name)
+                if label not in self._note_targets:
+                    track.status = "FAILED"
+                    track.last_message = (
+                        f"The {label} sticky note is not readable. "
+                        "The cap was not dropped."
+                    )
+                    self.get_logger().warning(track.last_message)
+                    continue
                 self.get_logger().info(
                     f"Auto pick selecting {label} "
                     f"(attempt {track.attempts + 1})"
@@ -1565,6 +1593,61 @@ class PickPlace(Node):
 
         return reader
 
+    def _remember_note_targets(self, replace=False):
+        """Read the notes once and keep each word's pixel for this run.
+
+        replace is the start of Pick All: the papers are still empty, so
+        this photo becomes the drop for every cap. A later single pick
+        keeps those pixels when the new photo cannot see a word, which
+        is what happens after a cap is already sitting on that note.
+        Returns an error string when there is nothing to drop on.
+        """
+        frame = self._wait_for_frame(NOTE_LOOK_SECONDS)
+        if frame is None:
+            if self._note_targets and not replace:
+                self.get_logger().info(
+                    "No overview image. Keeping the note positions "
+                    "read at the start."
+                )
+                return None
+            return (
+                "No overview image for the sticky notes. "
+                "The cap was not dropped."
+            )
+        found, error = read_note_targets(
+            frame, reader=self._note_reader(),
+        )
+        if error:
+            if self._note_targets and not replace:
+                self.get_logger().warning(
+                    error
+                    + " Keeping the note positions read at the start."
+                )
+                return None
+            self._note_targets = {}
+            return error
+        if replace or not self._note_targets:
+            self._note_targets = dict(found)
+        else:
+            for color, point in found.items():
+                if color not in self._note_targets:
+                    self._note_targets[color] = point
+            self.get_logger().info(
+                "Keeping the note positions read at the start."
+            )
+        for color in ("red", "white", "black"):
+            point = self._note_targets.get(color)
+            if point is None:
+                self.get_logger().info(
+                    f"No {color} note in the positions saved for this run."
+                )
+                continue
+            self.get_logger().info(
+                f"Saved {color} note at pixel "
+                f"{point[0]:.0f}, {point[1]:.0f}."
+            )
+        return None
+
     def _place_cap(
         self,
         class_name,
@@ -1574,35 +1657,45 @@ class PickPlace(Node):
         grasp_u=None,
         grasp_v=None,
     ):
-        """Park clear, read the matching sticky note, then drop there."""
+        """Park clear, then drop on the note read at the start of the run."""
         status, body = self._go_observe()
         if status != 200 or not body.get("success"):
             return status, body
-        frame = self._wait_for_frame(NOTE_LOOK_SECONDS)
-        if frame is None:
-            return _error_payload(
-                "No overview image for the sticky notes. "
-                "The cap was not dropped."
-            )
         if self._mapping is None:
             return _error_payload(
                 self._mapping_error or "Table mapping is not ready."
             )
-        note_uv, error = match_cap_note(
-            frame, class_name, reader=self._note_reader(),
-        )
-        if note_uv is None:
-            self.get_logger().warning(error)
-            return _error_payload(error)
+        label = CAP_CLASSES.get(class_name, "matching")
+        note_uv = self._note_targets.get(label)
+        if note_uv is not None:
+            self.get_logger().info(
+                f"Using the {label} note read at the start "
+                f"(pixel {note_uv[0]:.0f}, {note_uv[1]:.0f})."
+            )
+        else:
+            frame = self._wait_for_frame(NOTE_LOOK_SECONDS)
+            if frame is None:
+                return _error_payload(
+                    "No overview image for the sticky notes. "
+                    "The cap was not dropped."
+                )
+            note_uv, error = match_cap_note(
+                frame, class_name, reader=self._note_reader(),
+            )
+            if note_uv is None:
+                self.get_logger().warning(error)
+                return _error_payload(error)
+            self._note_targets[label] = note_uv
         raw_x, raw_y = project_table(
             self._mapping, note_uv[0], note_uv[1],
         )
-        label = CAP_CLASSES.get(class_name, "matching")
         if not in_workspace(raw_x, raw_y):
-            return _error_payload(
+            message = (
                 f"The {label} note at {raw_x:.0f}, {raw_y:.0f} mm "
                 "is outside the arm's reach. The cap was not dropped."
             )
+            self.get_logger().warning(message)
+            return _error_payload(message)
         drop_x, drop_y = self._clamp_drop_xy(raw_x, raw_y)
         self.get_logger().info(
             f"Sticky note for {label} at "
@@ -1626,12 +1719,10 @@ class PickPlace(Node):
             ("Lift clear", (drop_x, drop_y, TRAVEL_Z_MM), None, speed),
         )
         open_jaw = None
-        last_body = {"success": True, "message": "Placed"}
         for name, point, gripper_state, step_speed in steps:
             status, body = self._perform(
                 name, point, gripper_state, orientation, step_speed,
             )
-            last_body = body
             if name == "Open gripper":
                 open_jaw = body.get("final_value")
             if status != 200 or not body.get("success"):
@@ -2350,8 +2441,24 @@ class PickPlace(Node):
                 return None
             time.sleep(0.05)
 
+    def _return_holding(self, status, body):
+        """Park again and leave the gripper closed on the cap."""
+        original = body.get("message", "Place failed")
+        home_status, home_body = self._move_initial()
+        held = " The cap is still held."
+        if home_status == 200 and home_body.get("success"):
+            body["message"] = (
+                original + " Returned to the initial position." + held
+            )
+            return status, body
+        home_message = home_body.get("message", "Could not return.")
+        body["message"] = (
+            original + " Could not return: " + home_message + held
+        )
+        return status, body
+
     def _fail_and_return(self, status, body):
-        """Move back to the pose saved at the start of this pick."""
+        """Open the jaws, then move back to the pose saved at the start."""
         original = body.get("message", "Pick failed")
         if self._calibration is not None:
             hover_z = (
@@ -5014,8 +5121,77 @@ def find_yellow_notes(image):
             "w": int(width),
             "h": int(height),
         })
+    _add_touching_note_row(image, notes)
     notes.sort(key=lambda note: note["u"])
     return notes
+
+
+def _note_box(x_px, y_px, width, height):
+    """Return one note dict for a pixel box."""
+    return {
+        "u": float(x_px) + float(width) / 2.0,
+        "v": float(y_px) + float(height) / 2.0,
+        "x": int(x_px),
+        "y": int(y_px),
+        "w": int(width),
+        "h": int(height),
+    }
+
+
+def _split_note_row(x_px, y_px, width, height, mask):
+    """Split a wide yellow strip into square notes, or return nothing."""
+    if height < NOTE_MIN_SIDE_PX or width < NOTE_MIN_SIDE_PX:
+        return []
+    aspect = float(width) / float(height)
+    count = int(round(aspect))
+    if count < 2 or count > 4 or abs(aspect - count) > 0.55:
+        return []
+    pieces = []
+    for index in range(count):
+        x0 = x_px + int(round(index * width / float(count)))
+        x1 = x_px + int(round((index + 1) * width / float(count)))
+        piece_w = x1 - x0
+        if piece_w < NOTE_MIN_SIDE_PX:
+            return []
+        piece_aspect = float(piece_w) / float(height)
+        if piece_aspect < NOTE_ASPECT_MIN or piece_aspect > NOTE_ASPECT_MAX:
+            return []
+        roi = mask[y_px:y_px + height, x0:x1]
+        if roi.size == 0:
+            return []
+        fill = float(np.count_nonzero(roi)) / float(roi.size)
+        if fill < 0.45:
+            return []
+        pieces.append(_note_box(x0, y_px, piece_w, height))
+    return pieces
+
+
+def _add_touching_note_row(image, notes):
+    """Add notes that were glued into one yellow strip."""
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(
+        hsv,
+        (NOTE_HUE_MIN, NOTE_ROW_SAT_MIN, NOTE_VAL_MIN),
+        (NOTE_HUE_MAX, 255, 255),
+    )
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    contours, _hierarchy = cv2.findContours(
+        mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE,
+    )
+    image_area = float(image.shape[0] * image.shape[1])
+    for contour in contours:
+        if cv2.contourArea(contour) < NOTE_MIN_AREA_FRAC * image_area:
+            continue
+        x_px, y_px, width, height = cv2.boundingRect(contour)
+        for piece in _split_note_row(x_px, y_px, width, height, mask):
+            if any(
+                abs(piece["u"] - kept["u"]) < 40
+                and abs(piece["v"] - kept["v"]) < 40
+                for kept in notes
+            ):
+                continue
+            notes.append(piece)
 
 
 def prepare_note_ink(crop):
@@ -5180,14 +5356,16 @@ def read_note_label(crop, reader=None):
     return classify_note_word(text)
 
 
-def match_cap_note(image, class_name, reader=None):
-    """Return ((u, v), None) or (None, reason the cap was not dropped)."""
-    wanted = CAP_CLASSES.get(class_name)
-    if wanted is None:
-        return None, "Unknown cap color. The cap was not dropped."
+def read_note_targets(image, reader=None):
+    """Return ({color: (u, v)}, None) from one overview photo.
+
+    The second value is why the photo cannot be used. A word that is
+    not readable is left out. Two notes with the same word refuse the
+    whole photo.
+    """
     notes = find_yellow_notes(image)
     if not notes:
-        return None, (
+        return {}, (
             "No yellow sticky notes are visible. "
             "The cap was not dropped."
         )
@@ -5201,15 +5379,26 @@ def match_cap_note(image, class_name, reader=None):
         try:
             label = read_note_label(crop, reader=reader)
         except NoteReaderError as error:
-            return None, f"{error}. The cap was not dropped."
+            return {}, f"{error}. The cap was not dropped."
         if label is None:
             continue
         if label in by_color:
-            return None, (
+            return {}, (
                 f"Two sticky notes both read as {label}. "
                 "The cap was not dropped."
             )
         by_color[label] = (float(note["u"]), float(note["v"]))
+    return by_color, None
+
+
+def match_cap_note(image, class_name, reader=None):
+    """Return ((u, v), None) or (None, reason the cap was not dropped)."""
+    wanted = CAP_CLASSES.get(class_name)
+    if wanted is None:
+        return None, "Unknown cap color. The cap was not dropped."
+    by_color, error = read_note_targets(image, reader=reader)
+    if error:
+        return None, error
     point = by_color.get(wanted)
     if point is None:
         return None, (

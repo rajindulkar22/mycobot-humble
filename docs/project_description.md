@@ -38,18 +38,21 @@ trained colors, and one handwritten word per note.
 | The wrist camera can pull the gripper onto the cap during the descent | Live red and black descents that finished on the cap after nudges |
 | The laptop reads RED, WHITE, and BLACK from separate note crops, including upside-down writing | Live log: three reads, then a drop command for the matching word |
 | A coordinate move is refused or halted when a joint would pass the safe margin | Inverse-kinematics check before the move, live stop during it |
+| The cap is released on the note that names its color | Current table layout. An earlier layout missed; see below |
 
-The last step of the original goal is not met. The cell knows which
-note matches the cap, and it will drive toward the middle of that
-yellow rectangle, but that point is only as good as the calibration
-coverage. On the tested table the notes sat below the clicked region.
-The red cap was released near the calculated point and missed the
-paper. The black note projected past X = 280 mm, so the arm refused
-the move and the failed-pick cleanup opened the gripper at the park.
-Reading the word and placing on the paper are separate problems. The
-first is working. The second needs the notes to lie inside a
-calibration that was taken on the note row, or a wrist correction on
-the way down to the note. That wrist correction is not built.
+The original goal is met on the current table. The arm picks the cap,
+the laptop names the note, and the cap lands on that paper.
+
+An earlier layout missed, and the reason is still the one to watch.
+The notes sat below the clicked region, near pixel row 314, while the
+fit clicks sat near rows 90–190. The red cap opened at the calculated
+point, 254, −78 mm, and missed the paper. The black note projected
+past X = 280 mm, so the arm refused the move and the failed-pick
+cleanup opened the gripper at the park, 130, 130, 200 mm. With the
+notes inside the calibrated, reachable patch, that miss is gone. A
+wrist correction on the way down to the note is still not built. It
+is not required for the landing that works now. It is the backup for
+when a note slides out of the clicked patch.
 
 ## How the work was split
 
@@ -145,11 +148,11 @@ axes.
 On the accepted calibration the five residuals are about 2 to 6 mm.
 That is good enough to start a pick inside the clicked patch. It is
 not a promise outside it. The accepted clicks sit around pixel rows
-90 to 190. The sticky notes on the tested table sat near row 314.
-Projecting that row through the fit is a guess. The red note happened
-to fall inside the reach box and the arm opened there, off the paper.
-The black note, further to the right, fell past X = 280 mm and was
-refused.
+90 to 190. An earlier note row sat near row 314, and projecting that
+row was a guess: the red note opened off the paper, and the black
+note fell past X = 280 mm and was refused. Notes kept inside the
+clicked patch and inside X = 280 mm land. That is the layout that
+works now.
 
 This method is the best of the ones that were tried, because the
 captured pose already includes the pad offset and the arm's own
@@ -227,16 +230,17 @@ the tree as previews or as rejected alternatives.
 
 ## What is worth doing next
 
-The open gap is the drop, not the reader.
+The drop lands when the notes stay in the calibrated patch. These
+are the pieces that keep it that way, and the one failure mode that
+is still harsh.
 
-- Take the five fit spots on the row where the notes sit, plus a
-  check click on a note, and accept again. Until the check click on
-  a note is inside 12 mm, the arm should not be trusted to open there.
-- Keep the notes inside X = 280 mm. A black note to the right of a
-  red note already at about 254 mm is outside the box, and the
-  current failure path then opens the gripper at the park.
-- Add the same wrist recentring on the yellow note before the gripper
-  opens. That is the correction that made the picks land. The drop
-  does not have it yet.
-- Do not open the gripper when the place was refused. The cap should
-  stay in the pads until a point inside the box is actually reached.
+- If the camera or the note row moves, retake the five fit spots on
+  that row and accept again. A check click on a note should stay
+  inside 12 mm.
+- Keep every note inside X = 280 mm. A note past that line is refused.
+- Add wrist recentring on the yellow note before the gripper opens,
+  so a note that slides a little is corrected the same way a cap is.
+  A first try followed the nearest yellow paper and carried the red
+  cap onto the black note, so the drop stays on the overview aim.
+- A refused place already keeps the cap in the jaws. It no longer
+  opens at the park.

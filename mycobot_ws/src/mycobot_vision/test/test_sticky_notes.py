@@ -162,6 +162,36 @@ def test_live_frame_finds_three_notes_left_to_right():
     assert abs(notes[2]["u"] - 432) < 20
 
 
+def test_touching_notes_are_split_into_three():
+    module = load_pick_place()
+    hsv = np.zeros((480, 640, 3), np.uint8)
+    hsv[:, :] = (0, 0, 230)
+    # No gap, so the loose yellow mask sees one strip.
+    hsv[240:340, 180:480] = (28, 140, 220)
+    image = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    notes = module.find_yellow_notes(image)
+    assert len(notes) == 3
+    centers = [note["u"] for note in notes]
+    assert centers == sorted(centers)
+    assert abs(notes[1]["u"] - 330) < 20
+
+
+def test_one_photo_saves_every_note_word():
+    module = load_pick_place()
+    image = _yellow_scene()
+    words = iter(("WHITE", "RED", "BLACK"))
+
+    def reader(_crop, _prepared):
+        return next(words)
+
+    found, error = module.read_note_targets(image, reader=reader)
+    assert error is None
+    assert set(found) == {"white", "red", "black"}
+    assert abs(found["red"][0] - 325) < 15
+    assert abs(found["white"][0] - 217) < 20
+    assert abs(found["black"][0] - 432) < 20
+
+
 def test_red_cap_matches_the_red_note():
     module = load_pick_place()
     image = _yellow_scene()
