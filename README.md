@@ -42,8 +42,8 @@ Tested addresses, both from DHCP, so check them after a reboot:
 
 | Machine | Address used in this cell |
 | --- | --- |
-| Jetson | `192.168.178.154` |
-| Laptop running Ollama | `192.168.178.187` |
+| Jetson | `192.168.178.206` |
+| Laptop running Ollama | `192.168.178.202` |
 
 ## How the cell is wired
 
@@ -91,6 +91,41 @@ sequenceDiagram
   Laptop-->>Page: The word
   Page->>Arm: Move to that note and open
 ```
+
+## Runtime map
+
+The same path, with the addresses in use on 28 October 2026, is drawn in
+[pick-demonstration.html](.archify/architecture-pick-demonstration-20261028-204240/pick-demonstration.html).
+Open that file in a browser. It is a static page. The pick launch does
+not serve it.
+
+| Box | Where it lives | Role in one pick |
+| --- | --- | --- |
+| HP overview | USB webcam into the container | Table image, 640×480 MJPEG |
+| Overview camera | `usb_cam` plus rectify | `image_rect` for the detector and the page |
+| YOLO detector | CPU, `best.pt` | Red, white, and black cap boxes |
+| Operator | Pick page buttons | `POST /api/pick` for one color, or pick all |
+| Pick page | `http://192.168.178.206:8092` | Owns the sequence. Does not own the serial port |
+| Click calibration | `table_calibration.yaml` | Pixel to millimetres. Read again on Accept |
+| Wrist webcam | USB camera on the gripper | Close view during the descent |
+| Wrist camera | `image_raw` | Nudges the gripper onto the cap |
+| Laptop reader | `http://192.168.178.202:11434` | One note crop in, one word out |
+| Guarded driver | `/dev/ttyTHS1`, one lock | Inverse kinematics, then `send_coords` |
+| myCobot 280 | Serial, 1 000 000 baud | The only thing that moves |
+
+A color button posts to the pick page. The overview detector names
+the cap. The calibration turns that pixel into a tool pose. The wrist
+camera recentres the cap while the gripper descends, then the jaws
+close. The page crops each yellow note, posts that crop to
+`/api/chat` on the laptop, and opens the gripper only on the note
+whose word matches the cap. An unreachable laptop, or the word
+`UNREADABLE`, leaves the cap in the jaws.
+
+DHCP can change both addresses after a reboot. The table in
+[Machines](#machines) and the `note_reader_url` default in
+`pick_place.launch.py` are the pair checked on this date. Pass a new
+`note_reader_url` when the laptop address changes. The pick page
+follows the Jetson address. It binds `0.0.0.0:8092`.
 
 ## What was built
 
@@ -364,8 +399,18 @@ curl -s http://<laptop>:11434/api/tags
 ```
 
 The reply must include the Qwen model and a vision capability.
-`ollama` here was not a systemd user service. After a reboot, start
-`ollama serve` again with `OLLAMA_HOST=0.0.0.0:11434`.
+On this laptop, `ollama` also starts as a system service bound to
+`127.0.0.1:11434`. That answers the laptop and refuses the Jetson.
+`ss -ltn | grep 11434` must show `0.0.0.0:11434` or `*:11434`. If it
+shows only `127.0.0.1`, stop the service and start the open server:
+
+```bash
+sudo systemctl stop ollama
+OLLAMA_HOST=0.0.0.0:11434 ollama serve
+```
+
+Leave that window open. After a reboot, repeat it. The service would
+come back on localhost.
 
 ## First-time setup
 
@@ -396,8 +441,9 @@ docker exec -it mycobot-humble-jetson bash -lc \
   'source /opt/ros/humble/setup.bash && source /root/mycobot_ws/install/setup.bash && ros2 launch mycobot_hardware pick_place.launch.py use_wrist_guidance:=true'
 ```
 
-Open `http://<jetson>:8092`. Leave the laptop `ollama serve` window
-open. If the laptop address changed:
+Open `http://192.168.178.206:8092`. Leave the laptop `ollama serve`
+window open. The launch default is already
+`http://192.168.178.202:11434`. If the laptop address changed:
 
 ```bash
 ros2 launch mycobot_hardware pick_place.launch.py \
@@ -523,7 +569,7 @@ its own process. It does not change the file.
 | Second black cap is never picked | One box per class | Only the higher score is tracked. Use one cap of each color |
 | Note photo returns Red, White, Black in the wrong order | The model was given the whole table | Send one crop. That is what the pick node does |
 | `Connection refused` on port 11434 | Ollama is on localhost | Restart with `OLLAMA_HOST=0.0.0.0:11434` |
-| `ollama serve` address already in use | A server is already up | Use that server. Do not start a second one |
+| `ollama serve` address already in use | A server is already bound to port 11434 | Check `ss -ltn`. `127.0.0.1` is the system service: stop it, then start `OLLAMA_HOST=0.0.0.0:11434 ollama serve`. `*:11434` is already usable |
 | Jetson `POST /api/chat` returns 404 | The listening server has no model | `ollama list` in that environment, pull again if the model is missing |
 | First note takes a long time | The model is loading, about 1.5 GB and about 15 s | Wait. Do not close the serve window. The reader allows 60 s |
 | Log says the color, then the cap is still held at the park | The note pixel projects outside X 50–280 or Y −200–200, so the place is refused and the jaws stay closed | Move that note into the calibrated, reachable band. A black note to the right of a red note at about X = 254 mm crosses 280 mm |
@@ -543,8 +589,9 @@ its own process. It does not change the file.
   is not opened at 130, 130, 200 mm.
 - One cap of each color. Two black caps share one BLACK note, and
   the detector only tracks one of them.
-- Ollama is a foreground process. It does not survive a closed
-  terminal or a reboot until it is started again.
+- The open Ollama process does not survive a closed terminal or a
+  reboot. The system service does survive, and it listens only on
+  localhost until it is stopped and replaced.
 - The model context used here was 4096 tokens. One note crop fits.
   The whole frame does not, and it orders the words wrongly anyway.
 
@@ -552,6 +599,7 @@ its own process. It does not change the file.
 
 ```text
 mycobot_humble/
+├── .archify/          pick-cell diagram, open the HTML in a browser
 ├── compose.yaml
 ├── Dockerfile
 ├── README.md

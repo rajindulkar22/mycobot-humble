@@ -57,7 +57,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "note_reader_url",
-                default_value="http://192.168.178.187:11434",
+                default_value="http://192.168.178.202:11434",
                 description=(
                     "Laptop address for the sticky-note reader. "
                     "Empty uses the local letter reader."

@@ -1,0 +1,395 @@
+{
+  "schemaVersion": 1,
+  "ok": false,
+  "command": "finalize",
+  "status": "skipped",
+  "type": "architecture",
+  "quality": "showcase",
+  "startedAt": "2026-10-27T19:29:59.756Z",
+  "specification": {
+    "path": "/home/er/mycobot_humble/.archify/architecture-mycobot-runtime-20261027-202338/candidate.json",
+    "sha256": "f5d6b06f1cc8e6930fe835b36cc23e45d583a327f7ef67b53a671093c30e1274",
+    "bytes": 11087
+  },
+  "artifact": {
+    "path": "/home/er/mycobot_humble/.archify/architecture-mycobot-runtime-20261027-202338/mycobot-runtime.html",
+    "sha256": "393ff29950126b8f49fabafb40258c1d7adb547757df2e39911817ac6e0bc949",
+    "bytes": 852819
+  },
+  "stages": {
+    "validate": {
+      "status": "pass",
+      "exitCode": 0,
+      "durationMs": null,
+      "execution": "embedded-in-deliver",
+      "command": [
+        "/home/er/.local/opt/node-v24.22.1/bin/node",
+        "/home/er/.agents/skills/archify/bin/archify.mjs",
+        "deliver",
+        "architecture",
+        "/home/er/mycobot_humble/.archify/architecture-mycobot-runtime-20261027-202338/candidate.json",
+        "/home/er/mycobot_humble/.archify/architecture-mycobot-runtime-20261027-202338/mycobot-runtime.html",
+        "--quality",
+        "showcase",
+        "--repo-root",
+        "/home/er/mycobot_humble",
+        "--json"
+      ],
+      "receipt": {
+        "schemaVersion": 1,
+        "ok": true,
+        "command": "validate",
+        "specification": {
+          "sha256": "f5d6b06f1cc8e6930fe835b36cc23e45d583a327f7ef67b53a671093c30e1274",
+          "bytes": 11087
+        },
+        "validation": {
+          "checksPassed": 9,
+          "checkCount": 9,
+          "compositionProfile": "showcase",
+          "compositionStatus": "pass",
+          "errors": 0,
+          "warnings": 0
+        }
+      }
+    },
+    "deliver": {
+      "status": "pass",
+      "exitCode": 0,
+      "durationMs": 2947,
+      "command": [
+        "/home/er/.local/opt/node-v24.22.1/bin/node",
+        "/home/er/.agents/skills/archify/bin/archify.mjs",
+        "deliver",
+        "architecture",
+        "/home/er/mycobot_humble/.archify/architecture-mycobot-runtime-20261027-202338/candidate.json",
+        "/home/er/mycobot_humble/.archify/architecture-mycobot-runtime-20261027-202338/mycobot-runtime.html",
+        "--quality",
+        "showcase",
+        "--repo-root",
+        "/home/er/mycobot_humble",
+        "--json"
+      ],
+      "receipt": {
+        "schemaVersion": 1,
+        "receiptId": "62ebb331-db4e-4023-a8ab-2a610337103a",
+        "ok": true,
+        "command": "deliver",
+        "type": "architecture",
+        "input": "/home/er/mycobot_humble/.archify/architecture-mycobot-runtime-20261027-202338/candidate.json",
+        "output": "/home/er/mycobot_humble/.archify/architecture-mycobot-runtime-20261027-202338/mycobot-runtime.html",
+        "specification": {
+          "sha256": "f5d6b06f1cc8e6930fe835b36cc23e45d583a327f7ef67b53a671093c30e1274",
+          "bytes": 11087
+        },
+        "artifact": {
+          "sha256": "393ff29950126b8f49fabafb40258c1d7adb547757df2e39911817ac6e0bc949",
+          "bytes": 852819
+        },
+        "validation": {
+          "checksPassed": 9,
+          "checkCount": 9,
+          "compositionProfile": "showcase",
+          "compositionStatus": "pass",
+          "errors": 0,
+          "warnings": 0
+        },
+        "evidence": {
+          "verified": true,
+          "repository": "git@github.com:rajindulkar22/mycobot-humble",
+          "revision": "d87616acaa94452fc8d9fe52eb30e102f60c5b7c",
+          "references": 30,
+          "linkMode": "local-only"
+        },
+        "update": {
+          "status": "unavailable",
+          "installedVersion": null,
+          "availableVersion": null,
+          "releaseNotes": null,
+          "checkedAt": null,
+          "source": null,
+          "noticeRequired": false,
+          "noticeText": null,
+          "reason": "disabled"
+        }
+      }
+    },
+    "check": {
+      "status": "pass",
+      "exitCode": 0,
+      "durationMs": 910,
+      "command": [
+        "/home/er/.local/opt/node-v24.22.1/bin/node",
+        "/home/er/.agents/skills/archify/bin/archify.mjs",
+        "check",
+        "/home/er/mycobot_humble/.archify/architecture-mycobot-runtime-20261027-202338/mycobot-runtime.html",
+        "--require-provenance"
+      ],
+      "receipt": {
+        "ok": true,
+        "file": "/home/er/mycobot_humble/.archify/architecture-mycobot-runtime-20261027-202338/mycobot-runtime.html",
+        "artifact": {
+          "sha256": "393ff29950126b8f49fabafb40258c1d7adb547757df2e39911817ac6e0bc949",
+          "bytes": 852819
+        },
+        "checks": [
+          {
+            "name": "single_svg",
+            "ok": true,
+            "details": [
+              "found 1 <svg> block(s)"
+            ]
+          },
+          {
+            "name": "finite_svg",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "orthogonal_arrows",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "label_route_clearance",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "relationship_crossings",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "relationship_corridors",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "container_border_runs",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "route_rhythm",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "legend_clearance",
+            "ok": true,
+            "details": []
+          }
+        ],
+        "composition": {
+          "schemaVersion": 1,
+          "profile": "showcase",
+          "status": "pass",
+          "summary": {
+            "errors": 0,
+            "warnings": 0
+          },
+          "metrics": {
+            "properCrossings": 0,
+            "resolvedCrossovers": 0,
+            "ambiguousCorridors": 0,
+            "arrowheadCollisions": 0,
+            "containerBorderRuns": 0,
+            "labelRouteClearanceIssues": 0,
+            "labelCanvasOverflowIssues": 0,
+            "minLabelRouteClearance": 22.1,
+            "desktopReadabilityIssues": 0,
+            "viewportHeightIssues": 0,
+            "minProjectedNodeTextPx": 6.966292134831461,
+            "maxBends": 3,
+            "routesOverSuggestedBends": 1,
+            "maxStretch": 1,
+            "routesOverSuggestedStretch": 0,
+            "minSegmentPx": 24,
+            "minInteriorSegmentPx": 99,
+            "shortSegmentCount": 0,
+            "shortEndpointSegmentCount": 0,
+            "shortInteriorSegmentCount": 0,
+            "microSegmentCount": 0
+          },
+          "suggestedLimits": {
+            "bendsPerRelationship": 2,
+            "stretch": 1.35,
+            "segmentPx": 16,
+            "microSegmentPx": 8
+          },
+          "routeReview": {
+            "crossings": [],
+            "detours": [
+              {
+                "relationship": {
+                  "id": "wrist-to-pick",
+                  "from": "wrist",
+                  "to": "pick",
+                  "label": "image_raw",
+                  "collectionIndex": 8,
+                  "artifactIndex": 9
+                },
+                "bends": 3,
+                "stretch": 1
+              }
+            ]
+          },
+          "leadingSpace": {
+            "measured": true,
+            "emptyTopPx": 12,
+            "emptyTopRatio": 0.016,
+            "occupiedTop": 12,
+            "viewBoxTop": 0,
+            "canvasHeight": 744,
+            "typicalNodeHeight": 64,
+            "reviewSuggested": false
+          },
+          "desktopReadability": {
+            "budgetBasis": "legacy-930",
+            "readerContract": "declared-wide-v1",
+            "availableDiagramWidth": 930,
+            "actualBudgetPx": 930,
+            "limit": "legacy",
+            "requestedTargetPx": 7.5,
+            "requestedTargetMet": false,
+            "hardFloorPx": 6,
+            "hardFloorMet": true,
+            "minimumOwner": {
+              "kind": "edge",
+              "id": "hp-to-overview",
+              "from": "hpCam",
+              "to": "overview"
+            },
+            "minimumSourceTextPx": 8,
+            "minimumProjectedTextPx": 6.966292134831461,
+            "semanticTextCount": 33
+          },
+          "issues": []
+        },
+        "provenance": "current",
+        "deliveryReceiptId": "62ebb331-db4e-4023-a8ab-2a610337103a"
+      }
+    },
+    "browser-check": {
+      "status": "skipped",
+      "exitCode": 2,
+      "durationMs": 102,
+      "command": [
+        "/home/er/.local/opt/node-v24.22.1/bin/node",
+        "/home/er/.agents/skills/archify/bin/archify.mjs",
+        "browser-check",
+        "/home/er/mycobot_humble/.archify/architecture-mycobot-runtime-20261027-202338/mycobot-runtime.html",
+        "--json",
+        "--require-provenance"
+      ],
+      "execution": "in-process",
+      "receipt": {
+        "schemaVersion": 1,
+        "ok": false,
+        "command": "browser-check",
+        "evidenceKind": "automated-browser",
+        "status": "skipped",
+        "visualReview": "not-requested",
+        "provenance": "current",
+        "deliveryReceiptId": "62ebb331-db4e-4023-a8ab-2a610337103a",
+        "artifact": {
+          "path": "/home/er/mycobot_humble/.archify/architecture-mycobot-runtime-20261027-202338/mycobot-runtime.html",
+          "sha256": "393ff29950126b8f49fabafb40258c1d7adb547757df2e39911817ac6e0bc949",
+          "bytes": 852819
+        },
+        "state": {
+          "detail": "read",
+          "motion": "still"
+        },
+        "chrome": {
+          "status": "unavailable",
+          "executable": null
+        },
+        "diagnostics": [
+          {
+            "code": "viewer/chrome-unavailable",
+            "severity": "warning",
+            "message": "No supported browser found. Install Chrome/Chromium (or Microsoft Edge), or set ARCHIFY_CHROME to its executable path.",
+            "subject": {
+              "artifact": "/home/er/mycobot_humble/.archify/architecture-mycobot-runtime-20261027-202338/mycobot-runtime.html"
+            },
+            "evidence": {
+              "executable": null
+            },
+            "supportedFixes": [
+              "set ARCHIFY_CHROME to a Chrome/Chromium executable (or Microsoft Edge) and rerun browser-check"
+            ]
+          }
+        ],
+        "containment": {
+          "status": "skipped",
+          "policy": "fit-or-reader-declared-readable-vertical-scroll",
+          "viewports": []
+        },
+        "themeStates": {
+          "status": "skipped",
+          "viewports": []
+        },
+        "readability": {
+          "status": "skipped",
+          "minimumProjectedNodeTextPx": 6,
+          "viewports": []
+        },
+        "viewerChrome": {
+          "status": "skipped",
+          "viewports": []
+        },
+        "captures": {
+          "status": "not-requested",
+          "screenshots": [],
+          "contactSheet": null
+        },
+        "sidecars": {
+          "receipt": "mycobot-runtime.browser-check.json",
+          "files": []
+        },
+        "error": "No supported browser found. Install Chrome/Chromium (or Microsoft Edge), or set ARCHIFY_CHROME to its executable path."
+      }
+    }
+  },
+  "browserCheck": {
+    "requested": true,
+    "ran": false
+  },
+  "diagnostics": [
+    {
+      "code": "viewer/chrome-unavailable",
+      "severity": "warning",
+      "message": "No supported browser found. Install Chrome/Chromium (or Microsoft Edge), or set ARCHIFY_CHROME to its executable path.",
+      "subject": {
+        "artifact": "/home/er/mycobot_humble/.archify/architecture-mycobot-runtime-20261027-202338/mycobot-runtime.html"
+      },
+      "evidence": {
+        "executable": null
+      },
+      "supportedFixes": [
+        "set ARCHIFY_CHROME to a Chrome/Chromium executable (or Microsoft Edge) and rerun browser-check"
+      ]
+    }
+  ],
+  "evidence": {
+    "receipt": "/home/er/mycobot_humble/.archify/architecture-mycobot-runtime-20261027-202338/mycobot-runtime.finalize.json",
+    "summaryReceipt": "/home/er/mycobot_humble/.archify/architecture-mycobot-runtime-20261027-202338/mycobot-runtime.finalize-summary.json",
+    "browserCheckReceipt": "/home/er/mycobot_humble/.archify/architecture-mycobot-runtime-20261027-202338/mycobot-runtime.browser-check.json"
+  },
+  "visualReview": "not-requested",
+  "failedStage": "browser-check",
+  "finishedAt": "2026-10-27T19:30:04.294Z",
+  "durationMs": 4537,
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-10-27T19:30:00.283Z",
+    "source": "network",
+    "noticeRequired": false,
+    "noticeText": null
+  }
+}

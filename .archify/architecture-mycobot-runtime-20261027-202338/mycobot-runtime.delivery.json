@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "62ebb331-db4e-4023-a8ab-2a610337103a",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/home/er/mycobot_humble/.archify/architecture-mycobot-runtime-20261027-202338/candidate.json",
+  "output": "/home/er/mycobot_humble/.archify/architecture-mycobot-runtime-20261027-202338/mycobot-runtime.html",
+  "specification": {
+    "sha256": "f5d6b06f1cc8e6930fe835b36cc23e45d583a327f7ef67b53a671093c30e1274",
+    "bytes": 11087
+  },
+  "artifact": {
+    "sha256": "393ff29950126b8f49fabafb40258c1d7adb547757df2e39911817ac6e0bc949",
+    "bytes": 852819
+  }
+}

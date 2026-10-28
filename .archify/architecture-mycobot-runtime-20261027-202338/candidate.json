@@ -1,0 +1,430 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Pick-and-place runtime",
+    "locale": "en",
+    "output": ".archify/architecture-mycobot-runtime-20261027-202338/mycobot-runtime.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "git@github.com:rajindulkar22/mycobot-humble.git",
+      "revision": "d87616acaa94452fc8d9fe52eb30e102f60c5b7c",
+      "link_mode": "local-only"
+    }
+  },
+  "components": [
+    {
+      "id": "hpCam",
+      "type": "external",
+      "label": "HP overview",
+      "sublabel": "USB webcam",
+      "pos": [36, 44],
+      "size": [128, 56],
+      "sources": [
+        {
+          "path": "compose.yaml",
+          "line": 14,
+          "end_line": 14,
+          "label": "Overview USB id"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/config/overview_camera.yaml",
+          "line": 3,
+          "end_line": 10,
+          "label": "640x480 MJPEG"
+        }
+      ]
+    },
+    {
+      "id": "noteReader",
+      "type": "external",
+      "label": "Laptop reader",
+      "sublabel": "Qwen3-VL /api/chat",
+      "pos": [36, 156],
+      "size": [156, 64],
+      "sources": [
+        {
+          "path": "mycobot_ws/src/mycobot_hardware/launch/pick_place.launch.py",
+          "line": 58,
+          "end_line": 64,
+          "label": "note_reader_url"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/scripts/pick_place.py",
+          "line": 1555,
+          "end_line": 1566,
+          "label": "Laptop or local"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/scripts/pick_place.py",
+          "line": 5120,
+          "end_line": 5168,
+          "label": "One-word prompt"
+        }
+      ]
+    },
+    {
+      "id": "operator",
+      "type": "external",
+      "label": "Operator",
+      "sublabel": "Pick page",
+      "pos": [36, 264],
+      "size": [128, 60],
+      "sources": [
+        {
+          "path": "mycobot_ws/src/mycobot_vision/scripts/pick_place.py",
+          "line": 486,
+          "end_line": 501,
+          "label": "HTTP server"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/scripts/pick_place.py",
+          "line": 3072,
+          "end_line": 3079,
+          "label": "POST /api/pick"
+        }
+      ]
+    },
+    {
+      "id": "overview",
+      "type": "backend",
+      "label": "Overview camera",
+      "sublabel": "usb_cam + rectify",
+      "pos": [340, 40],
+      "size": [168, 64],
+      "sources": [
+        {
+          "path": "mycobot_ws/src/mycobot_vision/launch/cameras.launch.py",
+          "line": 42,
+          "end_line": 50,
+          "label": "overview_camera"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/launch/yolo_detection.launch.py",
+          "line": 31,
+          "end_line": 42,
+          "label": "image_rect"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/config/overview_camera.yaml",
+          "line": 3,
+          "end_line": 10,
+          "label": "/dev/video0"
+        }
+      ]
+    },
+    {
+      "id": "yolo",
+      "type": "backend",
+      "label": "YOLO detector",
+      "sublabel": "CPU, best.pt",
+      "pos": [608, 40],
+      "size": [168, 64],
+      "sources": [
+        {
+          "path": "mycobot_ws/src/mycobot_vision/scripts/yolo_detector.py",
+          "line": 264,
+          "end_line": 286,
+          "label": "Subscribe and publish"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/scripts/yolo_detector.py",
+          "line": 306,
+          "end_line": 327,
+          "label": "CPU predict"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/config/yolo_detector.yaml",
+          "line": 6,
+          "end_line": 20,
+          "label": "Topics and rate"
+        }
+      ]
+    },
+    {
+      "id": "pick",
+      "type": "backend",
+      "label": "Pick place",
+      "sublabel": "HTTP :8092",
+      "pos": [340, 250],
+      "size": [168, 88],
+      "sources": [
+        {
+          "path": "mycobot_ws/src/mycobot_vision/scripts/pick_place.py",
+          "line": 412,
+          "end_line": 484,
+          "label": "Feeds and clients"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/scripts/pick_place.py",
+          "line": 1407,
+          "end_line": 1502,
+          "label": "Descend and place"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/scripts/pick_place.py",
+          "line": 1568,
+          "end_line": 1610,
+          "label": "Match the note"
+        }
+      ]
+    },
+    {
+      "id": "driver",
+      "type": "backend",
+      "label": "Guarded driver",
+      "sublabel": "sole serial owner",
+      "tag": "IK checked",
+      "pos": [608, 250],
+      "size": [168, 88],
+      "sources": [
+        {
+          "path": "mycobot_ws/src/mycobot_hardware/mycobot_hardware/state_publisher.py",
+          "line": 55,
+          "end_line": 59,
+          "label": "ttyTHS1"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_hardware/mycobot_hardware/state_publisher.py",
+          "line": 223,
+          "end_line": 265,
+          "label": "Port lock"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_hardware/mycobot_hardware/state_publisher.py",
+          "line": 810,
+          "end_line": 917,
+          "label": "Gate, IK, send"
+        }
+      ]
+    },
+    {
+      "id": "arm",
+      "type": "external",
+      "label": "myCobot 280",
+      "sublabel": "pymycobot serial",
+      "pos": [880, 262],
+      "size": [148, 64],
+      "sources": [
+        {
+          "path": "compose.yaml",
+          "line": 13,
+          "end_line": 13,
+          "label": "ttyTHS1 device"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_hardware/mycobot_hardware/state_publisher.py",
+          "line": 265,
+          "end_line": 265,
+          "label": "MyCobot280"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_hardware/mycobot_hardware/state_publisher.py",
+          "line": 912,
+          "end_line": 917,
+          "label": "send_coords"
+        }
+      ]
+    },
+    {
+      "id": "calib",
+      "type": "database",
+      "label": "Click calibration",
+      "sublabel": "pixel to tool pose",
+      "pos": [340, 460],
+      "size": [168, 64],
+      "sources": [
+        {
+          "path": "mycobot_ws/src/mycobot_vision/config/table_calibration.yaml",
+          "line": 1,
+          "end_line": 20,
+          "label": "Accepted affine"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/scripts/pick_place.py",
+          "line": 3926,
+          "end_line": 3934,
+          "label": "Load yaml"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/scripts/pick_place.py",
+          "line": 3158,
+          "end_line": 3164,
+          "label": "Project pixel"
+        }
+      ]
+    },
+    {
+      "id": "wrist",
+      "type": "backend",
+      "label": "Wrist camera",
+      "sublabel": "usb_cam image_raw",
+      "pos": [608, 460],
+      "size": [168, 64],
+      "sources": [
+        {
+          "path": "mycobot_ws/src/mycobot_vision/launch/cameras.launch.py",
+          "line": 51,
+          "end_line": 59,
+          "label": "wrist_camera"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/config/wrist_camera.yaml",
+          "line": 3,
+          "end_line": 10,
+          "label": "/dev/video1"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_hardware/launch/pick_place.launch.py",
+          "line": 66,
+          "end_line": 98,
+          "label": "Guidance on"
+        }
+      ]
+    },
+    {
+      "id": "wristUsb",
+      "type": "external",
+      "label": "Wrist webcam",
+      "sublabel": "USB on gripper",
+      "pos": [608, 620],
+      "size": [168, 56],
+      "sources": [
+        {
+          "path": "compose.yaml",
+          "line": 15,
+          "end_line": 15,
+          "label": "Wrist USB id"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/config/wrist_camera.yaml",
+          "line": 3,
+          "end_line": 7,
+          "label": "video1 MJPEG"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Jetson ROS 2 container",
+      "wraps": ["overview", "yolo", "pick", "driver", "calib", "wrist"],
+      "pad": 28
+    }
+  ],
+  "connections": [
+    {
+      "id": "hp-to-overview",
+      "from": "hpCam",
+      "to": "overview",
+      "label": "USB MJPEG",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "overview-to-yolo",
+      "from": "overview",
+      "to": "yolo",
+      "label": "image_rect",
+      "variant": "emphasis"
+    },
+    {
+      "id": "yolo-to-pick",
+      "from": "yolo",
+      "to": "pick",
+      "label": "detections",
+      "variant": "emphasis",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "operator-to-pick",
+      "from": "operator",
+      "to": "pick",
+      "label": "POST /api/pick",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "pick-to-reader",
+      "from": "pick",
+      "to": "noteReader",
+      "label": "POST /api/chat",
+      "variant": "emphasis",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "pick-to-driver",
+      "from": "pick",
+      "to": "driver",
+      "label": "move_coords",
+      "variant": "emphasis"
+    },
+    {
+      "id": "driver-to-arm",
+      "from": "driver",
+      "to": "arm",
+      "label": "send_coords",
+      "variant": "emphasis"
+    },
+    {
+      "id": "pick-to-calib",
+      "from": "pick",
+      "to": "calib",
+      "label": "read affine",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "wrist-to-pick",
+      "from": "wrist",
+      "to": "pick",
+      "label": "image_raw",
+      "variant": "emphasis",
+      "fromSide": "left",
+      "toSide": "bottom"
+    },
+    {
+      "id": "usb-to-wrist",
+      "from": "wristUsb",
+      "to": "wrist",
+      "label": "USB MJPEG",
+      "fromSide": "top",
+      "toSide": "bottom"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Primary path",
+      "items": [
+        "Operator posts one cap color to the pick page",
+        "YOLO names the cap; the affine fit turns that pixel into a tool pose",
+        "The wrist camera nudges the descent, then the gripper closes",
+        "The laptop reads one note crop and the driver opens on that note"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Not on this path",
+      "items": [
+        "MoveIt plans only; it does not execute",
+        "RViz mirrors joint_states and does not command the arm",
+        "The card homography feeds the preview, not the pick"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Guards",
+      "items": [
+        "The pick launch turns coord and gripper motion on for this process",
+        "The driver refuses a pose with no inverse-kinematics solution",
+        "A live joint inside the 2 degree limit margin stops the move",
+        "An empty note-reader URL falls back to local Tesseract"
+      ]
+    }
+  ]
+}
