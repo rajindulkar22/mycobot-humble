@@ -1,0 +1,452 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Pick cell demonstration",
+    "locale": "en",
+    "output": ".archify/architecture-pick-demonstration-20261029-193244/pick-demonstration.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "git@github.com:rajindulkar22/mycobot-humble.git",
+      "revision": "4891e523bcb34b4df645a79e4df28eb0e16a621f",
+      "link_mode": "local-only"
+    },
+    "views": [
+      {
+        "id": "capToNote",
+        "label": "Cap to note",
+        "focus": ["hpCam", "overview", "yolo", "pick", "noteReader", "driver", "arm"],
+        "note": "One crop goes to the laptop. The word comes back with the note pixel the Jetson kept."
+      },
+      {
+        "id": "liveAddresses",
+        "label": "Live addresses",
+        "focus": ["pick", "noteReader"],
+        "note": "The page is on the Jetson. The note reader is on the laptop."
+      },
+      {
+        "id": "wristDescent",
+        "label": "Wrist descent",
+        "focus": ["wristUsb", "wrist", "pick", "driver", "arm"],
+        "note": "The wrist camera nudges the gripper while it descends onto the cap."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "hpCam",
+      "type": "external",
+      "label": "HP overview",
+      "sublabel": "USB webcam",
+      "pos": [40, 48],
+      "size": [148, 56],
+      "sources": [
+        {
+          "path": "compose.yaml",
+          "line": 14,
+          "end_line": 14,
+          "label": "Overview USB id"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/config/overview_camera.yaml",
+          "line": 3,
+          "end_line": 10,
+          "label": "640x480 MJPEG"
+        }
+      ]
+    },
+    {
+      "id": "overview",
+      "type": "backend",
+      "label": "Overview camera",
+      "sublabel": "usb_cam + rectify",
+      "pos": [268, 44],
+      "size": [172, 64],
+      "sources": [
+        {
+          "path": "mycobot_ws/src/mycobot_vision/launch/cameras.launch.py",
+          "line": 42,
+          "end_line": 50,
+          "label": "overview_camera"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/launch/yolo_detection.launch.py",
+          "line": 31,
+          "end_line": 41,
+          "label": "image_rect"
+        }
+      ]
+    },
+    {
+      "id": "yolo",
+      "type": "backend",
+      "label": "YOLO detector",
+      "sublabel": "CPU, best.pt",
+      "pos": [560, 44],
+      "size": [172, 64],
+      "sources": [
+        {
+          "path": "mycobot_ws/src/mycobot_vision/scripts/yolo_detector.py",
+          "line": 264,
+          "end_line": 281,
+          "label": "Subscribe and publish"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/scripts/yolo_detector.py",
+          "line": 179,
+          "end_line": 179,
+          "label": "CPU device"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/config/yolo_detector.yaml",
+          "line": 4,
+          "end_line": 11,
+          "label": "Three cap classes"
+        }
+      ]
+    },
+    {
+      "id": "operator",
+      "type": "external",
+      "label": "Operator",
+      "sublabel": "Color buttons",
+      "icon": "person",
+      "pos": [40, 248],
+      "size": [148, 64],
+      "sources": [
+        {
+          "path": "mycobot_ws/src/mycobot_vision/scripts/pick_place.py",
+          "line": 3179,
+          "end_line": 3187,
+          "label": "POST /api/pick"
+        }
+      ]
+    },
+    {
+      "id": "pick",
+      "type": "backend",
+      "label": "Pick page",
+      "sublabel": "192.168.178.206:8092",
+      "pos": [268, 228],
+      "size": [200, 100],
+      "sources": [
+        {
+          "path": "mycobot_ws/src/mycobot_vision/scripts/pick_place.py",
+          "line": 292,
+          "end_line": 293,
+          "label": "Port 8092"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/scripts/pick_place.py",
+          "line": 460,
+          "end_line": 463,
+          "label": "Cap detections"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/scripts/pick_place.py",
+          "line": 1583,
+          "end_line": 1591,
+          "label": "Ask the laptop"
+        }
+      ]
+    },
+    {
+      "id": "driver",
+      "type": "backend",
+      "label": "Guarded driver",
+      "sublabel": "sole serial owner",
+      "tag": "IK checked",
+      "pos": [560, 236],
+      "size": [172, 84],
+      "sources": [
+        {
+          "path": "mycobot_ws/src/mycobot_hardware/mycobot_hardware/state_publisher.py",
+          "line": 58,
+          "end_line": 58,
+          "label": "ttyTHS1"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_hardware/mycobot_hardware/state_publisher.py",
+          "line": 223,
+          "end_line": 238,
+          "label": "Port lock"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_hardware/mycobot_hardware/state_publisher.py",
+          "line": 894,
+          "end_line": 917,
+          "label": "Gate, IK, send"
+        }
+      ]
+    },
+    {
+      "id": "arm",
+      "type": "external",
+      "label": "myCobot 280",
+      "sublabel": "pymycobot serial",
+      "pos": [860, 246],
+      "size": [156, 64],
+      "sources": [
+        {
+          "path": "compose.yaml",
+          "line": 13,
+          "end_line": 13,
+          "label": "ttyTHS1 device"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_hardware/mycobot_hardware/state_publisher.py",
+          "line": 265,
+          "end_line": 265,
+          "label": "MyCobot280"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_hardware/mycobot_hardware/state_publisher.py",
+          "line": 917,
+          "end_line": 917,
+          "label": "send_coords"
+        }
+      ]
+    },
+    {
+      "id": "noteReader",
+      "type": "external",
+      "label": "Laptop reader",
+      "sublabel": "Ollama, Qwen3-VL on GPU",
+      "tag": "one crop at a time",
+      "pos": [40, 640],
+      "size": [230, 96],
+      "sources": [
+        {
+          "path": "mycobot_ws/src/mycobot_hardware/launch/pick_place.launch.py",
+          "line": 58,
+          "end_line": 64,
+          "label": "note_reader_url"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/scripts/pick_place.py",
+          "line": 5296,
+          "end_line": 5299,
+          "label": "Qwen3-VL prompt"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/scripts/pick_place.py",
+          "line": 5330,
+          "end_line": 5337,
+          "label": "POST /api/chat"
+        }
+      ]
+    },
+    {
+      "id": "wrist",
+      "type": "backend",
+      "label": "Wrist camera",
+      "sublabel": "nudges the descent",
+      "pos": [268, 430],
+      "size": [200, 64],
+      "sources": [
+        {
+          "path": "mycobot_ws/src/mycobot_vision/launch/cameras.launch.py",
+          "line": 51,
+          "end_line": 59,
+          "label": "wrist_camera"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/scripts/pick_place.py",
+          "line": 425,
+          "end_line": 430,
+          "label": "image_raw"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_hardware/launch/pick_place.launch.py",
+          "line": 67,
+          "end_line": 73,
+          "label": "Guidance on"
+        }
+      ]
+    },
+    {
+      "id": "calib",
+      "type": "database",
+      "label": "Click calibration",
+      "sublabel": "pixel to millimetres",
+      "pos": [560, 430],
+      "size": [172, 64],
+      "sources": [
+        {
+          "path": "mycobot_ws/src/mycobot_vision/config/table_calibration.yaml",
+          "line": 4,
+          "end_line": 20,
+          "label": "Accepted affine"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/scripts/pick_place.py",
+          "line": 4033,
+          "end_line": 4037,
+          "label": "Load yaml"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/scripts/pick_place.py",
+          "line": 3265,
+          "end_line": 3270,
+          "label": "Project pixel"
+        }
+      ]
+    },
+    {
+      "id": "wristUsb",
+      "type": "external",
+      "label": "Wrist webcam",
+      "sublabel": "USB on gripper",
+      "pos": [268, 570],
+      "size": [200, 56],
+      "sources": [
+        {
+          "path": "compose.yaml",
+          "line": 15,
+          "end_line": 15,
+          "label": "Wrist USB id"
+        },
+        {
+          "path": "mycobot_ws/src/mycobot_vision/config/wrist_camera.yaml",
+          "line": 3,
+          "end_line": 7,
+          "label": "video1 MJPEG"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Jetson container 192.168.178.206",
+      "wraps": ["overview", "yolo", "pick", "driver", "wrist", "calib"],
+      "pad": 28
+    }
+  ],
+  "connections": [
+    {
+      "id": "hpToOverview",
+      "from": "hpCam",
+      "to": "overview",
+      "label": "USB MJPEG"
+    },
+    {
+      "id": "overviewToYolo",
+      "from": "overview",
+      "to": "yolo",
+      "label": "image_rect",
+      "variant": "emphasis"
+    },
+    {
+      "id": "yoloToPick",
+      "from": "yolo",
+      "to": "pick",
+      "label": "detections",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "operatorToPick",
+      "from": "operator",
+      "to": "pick",
+      "label": "POST /api/pick",
+      "variant": "emphasis"
+    },
+    {
+      "id": "pickToReader",
+      "from": "pick",
+      "to": "noteReader",
+      "label": "one note crop",
+      "variant": "emphasis",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "readerToPick",
+      "from": "noteReader",
+      "to": "pick",
+      "label": "label + location",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "pickToDriver",
+      "from": "pick",
+      "to": "driver",
+      "label": "move_coords",
+      "variant": "emphasis"
+    },
+    {
+      "id": "driverToArm",
+      "from": "driver",
+      "to": "arm",
+      "label": "send_coords",
+      "variant": "emphasis"
+    },
+    {
+      "id": "pickToCalib",
+      "from": "pick",
+      "to": "calib",
+      "label": "read affine",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "wristToPick",
+      "from": "wrist",
+      "to": "pick",
+      "label": "image_raw",
+      "variant": "emphasis",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "usbToWrist",
+      "from": "wristUsb",
+      "to": "wrist",
+      "label": "USB MJPEG",
+      "fromSide": "top",
+      "toSide": "bottom"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Live addresses",
+      "items": [
+        "Pick page: http://192.168.178.206:8092",
+        "Laptop note reader: http://192.168.178.202:11434",
+        "This diagram: http://192.168.178.206:8765/pick-demonstration.html"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "One cap",
+      "items": [
+        "A color button posts /api/pick to the page",
+        "YOLO names the cap and the affine fit turns that pixel into a tool pose",
+        "The wrist camera nudges the descent, then the gripper closes",
+        "One yellow crop goes out. RED, WHITE, BLACK, or UNREADABLE comes back"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Guards",
+      "items": [
+        "Only this driver may hold the serial port",
+        "A pose with no inverse-kinematics solution is not sent",
+        "If the laptop cannot be reached, or the word is UNREADABLE, the cap is not dropped"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Label and location",
+      "items": [
+        "The laptop is asked for one word: RED, WHITE, BLACK, or UNREADABLE",
+        "It does not choose a table coordinate",
+        "The Jetson kept the yellow rectangle's pixel, and that pixel is the note location"
+      ]
+    }
+  ]
+}

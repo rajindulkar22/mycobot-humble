@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "f6d4fd89-ef80-4956-8c95-5e9f5b66dbf4",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/home/er/mycobot_humble/.archify/architecture-pick-demonstration-20261029-193244/candidate.json",
+  "output": "/home/er/mycobot_humble/.archify/architecture-pick-demonstration-20261029-193244/pick-demonstration.html",
+  "specification": {
+    "sha256": "779b7da7d8e4f4849335f6b3af8523655dfa47769e1302bd3b3d53860873a65a",
+    "bytes": 11835
+  },
+  "artifact": {
+    "sha256": "3323c410685fd21cd09d3eacf56d82018d577bc820b812bf5f93262041969146",
+    "bytes": 854631
+  }
+}

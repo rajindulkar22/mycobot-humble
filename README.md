@@ -95,9 +95,9 @@ sequenceDiagram
 ## Runtime map
 
 The same path, with the addresses in use on 28 October 2026, is drawn in
-[pick-demonstration.html](.archify/architecture-pick-demonstration-20261028-204240/pick-demonstration.html).
+[pick-demonstration.html](.archify/architecture-pick-demonstration-20261029-193244/pick-demonstration.html).
 Open that file in a browser. It is a static page. The pick launch does
-not serve it.
+not serve it. The 29 October drawing adds the note-reader return.
 
 | Box | Where it lives | Role in one pick |
 | --- | --- | --- |
@@ -109,17 +109,20 @@ not serve it.
 | Click calibration | `table_calibration.yaml` | Pixel to millimetres. Read again on Accept |
 | Wrist webcam | USB camera on the gripper | Close view during the descent |
 | Wrist camera | `image_raw` | Nudges the gripper onto the cap |
-| Laptop reader | `http://192.168.178.202:11434` | One note crop in, one word out |
+| Laptop reader | `http://192.168.178.202:11434` | One yellow crop in. RED, WHITE, BLACK, or UNREADABLE out |
 | Guarded driver | `/dev/ttyTHS1`, one lock | Inverse kinematics, then `send_coords` |
 | myCobot 280 | Serial, 1 000 000 baud | The only thing that moves |
 
 A color button posts to the pick page. The overview detector names
 the cap. The calibration turns that pixel into a tool pose. The wrist
 camera recentres the cap while the gripper descends, then the jaws
-close. The page crops each yellow note, posts that crop to
-`/api/chat` on the laptop, and opens the gripper only on the note
-whose word matches the cap. An unreachable laptop, or the word
-`UNREADABLE`, leaves the cap in the jaws.
+close. The page sends one yellow crop to the laptop. On the diagram
+that arrow is `one note crop`. The reply is RED, WHITE, BLACK, or
+UNREADABLE. The return arrow is `label + location`: the laptop sends
+the word, and the Jetson already kept that note's pixel, so the two
+together are the drop. The laptop does not choose a table coordinate.
+An unreachable laptop, or the word `UNREADABLE`, leaves the cap in
+the jaws.
 
 DHCP can change both addresses after a reboot. The table in
 [Machines](#machines) and the `note_reader_url` default in

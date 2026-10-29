@@ -1,0 +1,442 @@
+{
+  "schemaVersion": 1,
+  "ok": false,
+  "command": "finalize",
+  "status": "skipped",
+  "type": "architecture",
+  "quality": "showcase",
+  "startedAt": "2026-10-29T18:33:49.905Z",
+  "specification": {
+    "path": "/home/er/mycobot_humble/.archify/architecture-pick-demonstration-20261029-193244/candidate.json",
+    "sha256": "779b7da7d8e4f4849335f6b3af8523655dfa47769e1302bd3b3d53860873a65a",
+    "bytes": 11835
+  },
+  "artifact": {
+    "path": "/home/er/mycobot_humble/.archify/architecture-pick-demonstration-20261029-193244/pick-demonstration.html",
+    "sha256": "3323c410685fd21cd09d3eacf56d82018d577bc820b812bf5f93262041969146",
+    "bytes": 854631
+  },
+  "stages": {
+    "validate": {
+      "status": "pass",
+      "exitCode": 0,
+      "durationMs": null,
+      "execution": "embedded-in-deliver",
+      "command": [
+        "/home/er/.local/opt/node-v24.22.1/bin/node",
+        "/home/er/.agents/skills/archify/bin/archify.mjs",
+        "deliver",
+        "architecture",
+        "/home/er/mycobot_humble/.archify/architecture-pick-demonstration-20261029-193244/candidate.json",
+        "/home/er/mycobot_humble/.archify/architecture-pick-demonstration-20261029-193244/pick-demonstration.html",
+        "--quality",
+        "showcase",
+        "--repo-root",
+        "/home/er/mycobot_humble",
+        "--json"
+      ],
+      "receipt": {
+        "schemaVersion": 1,
+        "ok": true,
+        "command": "validate",
+        "specification": {
+          "sha256": "779b7da7d8e4f4849335f6b3af8523655dfa47769e1302bd3b3d53860873a65a",
+          "bytes": 11835
+        },
+        "validation": {
+          "checksPassed": 9,
+          "checkCount": 9,
+          "compositionProfile": "showcase",
+          "compositionStatus": "pass",
+          "errors": 0,
+          "warnings": 0
+        }
+      }
+    },
+    "deliver": {
+      "status": "pass",
+      "exitCode": 0,
+      "durationMs": 2128,
+      "command": [
+        "/home/er/.local/opt/node-v24.22.1/bin/node",
+        "/home/er/.agents/skills/archify/bin/archify.mjs",
+        "deliver",
+        "architecture",
+        "/home/er/mycobot_humble/.archify/architecture-pick-demonstration-20261029-193244/candidate.json",
+        "/home/er/mycobot_humble/.archify/architecture-pick-demonstration-20261029-193244/pick-demonstration.html",
+        "--quality",
+        "showcase",
+        "--repo-root",
+        "/home/er/mycobot_humble",
+        "--json"
+      ],
+      "receipt": {
+        "schemaVersion": 1,
+        "receiptId": "f6d4fd89-ef80-4956-8c95-5e9f5b66dbf4",
+        "ok": true,
+        "command": "deliver",
+        "type": "architecture",
+        "input": "/home/er/mycobot_humble/.archify/architecture-pick-demonstration-20261029-193244/candidate.json",
+        "output": "/home/er/mycobot_humble/.archify/architecture-pick-demonstration-20261029-193244/pick-demonstration.html",
+        "specification": {
+          "sha256": "779b7da7d8e4f4849335f6b3af8523655dfa47769e1302bd3b3d53860873a65a",
+          "bytes": 11835
+        },
+        "artifact": {
+          "sha256": "3323c410685fd21cd09d3eacf56d82018d577bc820b812bf5f93262041969146",
+          "bytes": 854631
+        },
+        "validation": {
+          "checksPassed": 9,
+          "checkCount": 9,
+          "compositionProfile": "showcase",
+          "compositionStatus": "pass",
+          "errors": 0,
+          "warnings": 0
+        },
+        "evidence": {
+          "verified": true,
+          "repository": "git@github.com:rajindulkar22/mycobot-humble",
+          "revision": "4891e523bcb34b4df645a79e4df28eb0e16a621f",
+          "references": 28,
+          "linkMode": "local-only"
+        },
+        "update": {
+          "status": "unavailable",
+          "installedVersion": null,
+          "availableVersion": null,
+          "releaseNotes": null,
+          "checkedAt": null,
+          "source": null,
+          "noticeRequired": false,
+          "noticeText": null,
+          "reason": "disabled"
+        }
+      }
+    },
+    "check": {
+      "status": "pass",
+      "exitCode": 0,
+      "durationMs": 786,
+      "command": [
+        "/home/er/.local/opt/node-v24.22.1/bin/node",
+        "/home/er/.agents/skills/archify/bin/archify.mjs",
+        "check",
+        "/home/er/mycobot_humble/.archify/architecture-pick-demonstration-20261029-193244/pick-demonstration.html",
+        "--require-provenance"
+      ],
+      "receipt": {
+        "ok": true,
+        "file": "/home/er/mycobot_humble/.archify/architecture-pick-demonstration-20261029-193244/pick-demonstration.html",
+        "artifact": {
+          "sha256": "3323c410685fd21cd09d3eacf56d82018d577bc820b812bf5f93262041969146",
+          "bytes": 854631
+        },
+        "checks": [
+          {
+            "name": "single_svg",
+            "ok": true,
+            "details": [
+              "found 1 <svg> block(s)"
+            ]
+          },
+          {
+            "name": "finite_svg",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "orthogonal_arrows",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "label_route_clearance",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "relationship_crossings",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "relationship_corridors",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "container_border_runs",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "route_rhythm",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "legend_clearance",
+            "ok": true,
+            "details": []
+          }
+        ],
+        "composition": {
+          "schemaVersion": 1,
+          "profile": "showcase",
+          "status": "pass",
+          "summary": {
+            "errors": 0,
+            "warnings": 0
+          },
+          "metrics": {
+            "properCrossings": 0,
+            "resolvedCrossovers": 2,
+            "ambiguousCorridors": 0,
+            "arrowheadCollisions": 0,
+            "containerBorderRuns": 0,
+            "labelRouteClearanceIssues": 0,
+            "labelCanvasOverflowIssues": 0,
+            "minLabelRouteClearance": 10.6,
+            "desktopReadabilityIssues": 0,
+            "viewportHeightIssues": 0,
+            "minProjectedNodeTextPx": 7.045454545454546,
+            "maxBends": 4,
+            "routesOverSuggestedBends": 1,
+            "maxStretch": 1.237,
+            "routesOverSuggestedStretch": 0,
+            "minSegmentPx": 24,
+            "minInteriorSegmentPx": 50,
+            "shortSegmentCount": 0,
+            "shortEndpointSegmentCount": 0,
+            "shortInteriorSegmentCount": 0,
+            "microSegmentCount": 0
+          },
+          "suggestedLimits": {
+            "bendsPerRelationship": 2,
+            "stretch": 1.35,
+            "segmentPx": 16,
+            "microSegmentPx": 8
+          },
+          "routeReview": {
+            "crossings": [
+              {
+                "left": {
+                  "id": "pickToReader",
+                  "from": "pick",
+                  "to": "noteReader",
+                  "label": "one note crop",
+                  "collectionIndex": 4,
+                  "artifactIndex": 5
+                },
+                "right": {
+                  "id": "readerToPick",
+                  "from": "noteReader",
+                  "to": "pick",
+                  "label": "label + location",
+                  "collectionIndex": 5,
+                  "artifactIndex": 6
+                },
+                "point": [
+                  244,
+                  352
+                ],
+                "sharedNode": "pick"
+              },
+              {
+                "left": {
+                  "id": "readerToPick",
+                  "from": "noteReader",
+                  "to": "pick",
+                  "label": "label + location",
+                  "collectionIndex": 5,
+                  "artifactIndex": 6
+                },
+                "right": {
+                  "id": "wristToPick",
+                  "from": "wrist",
+                  "to": "pick",
+                  "label": "image_raw",
+                  "collectionIndex": 9,
+                  "artifactIndex": 10
+                },
+                "point": [
+                  338.9500000000001,
+                  352
+                ],
+                "sharedNode": "pick"
+              }
+            ],
+            "detours": [
+              {
+                "relationship": {
+                  "id": "pickToReader",
+                  "from": "pick",
+                  "to": "noteReader",
+                  "label": "one note crop",
+                  "collectionIndex": 4,
+                  "artifactIndex": 5
+                },
+                "bends": 4,
+                "stretch": 1.237
+              }
+            ]
+          },
+          "leadingSpace": {
+            "measured": true,
+            "emptyTopPx": 16,
+            "emptyTopRatio": 0.02,
+            "occupiedTop": 16,
+            "viewBoxTop": 0,
+            "canvasHeight": 804,
+            "typicalNodeHeight": 64,
+            "reviewSuggested": false
+          },
+          "desktopReadability": {
+            "budgetBasis": "legacy-930",
+            "readerContract": "declared-wide-v1",
+            "availableDiagramWidth": 930,
+            "actualBudgetPx": 930,
+            "limit": "legacy",
+            "requestedTargetPx": 7.5,
+            "requestedTargetMet": false,
+            "hardFloorPx": 6,
+            "hardFloorMet": true,
+            "minimumOwner": {
+              "kind": "edge",
+              "id": "hpToOverview",
+              "from": "hpCam",
+              "to": "overview"
+            },
+            "minimumSourceTextPx": 8,
+            "minimumProjectedTextPx": 7.045454545454546,
+            "semanticTextCount": 34
+          },
+          "issues": []
+        },
+        "provenance": "current",
+        "deliveryReceiptId": "f6d4fd89-ef80-4956-8c95-5e9f5b66dbf4"
+      }
+    },
+    "browser-check": {
+      "status": "skipped",
+      "exitCode": 2,
+      "durationMs": 101,
+      "command": [
+        "/home/er/.local/opt/node-v24.22.1/bin/node",
+        "/home/er/.agents/skills/archify/bin/archify.mjs",
+        "browser-check",
+        "/home/er/mycobot_humble/.archify/architecture-pick-demonstration-20261029-193244/pick-demonstration.html",
+        "--json",
+        "--require-provenance"
+      ],
+      "execution": "in-process",
+      "receipt": {
+        "schemaVersion": 1,
+        "ok": false,
+        "command": "browser-check",
+        "evidenceKind": "automated-browser",
+        "status": "skipped",
+        "visualReview": "not-requested",
+        "provenance": "current",
+        "deliveryReceiptId": "f6d4fd89-ef80-4956-8c95-5e9f5b66dbf4",
+        "artifact": {
+          "path": "/home/er/mycobot_humble/.archify/architecture-pick-demonstration-20261029-193244/pick-demonstration.html",
+          "sha256": "3323c410685fd21cd09d3eacf56d82018d577bc820b812bf5f93262041969146",
+          "bytes": 854631
+        },
+        "state": {
+          "detail": "read",
+          "motion": "still"
+        },
+        "chrome": {
+          "status": "unavailable",
+          "executable": null
+        },
+        "diagnostics": [
+          {
+            "code": "viewer/chrome-unavailable",
+            "severity": "warning",
+            "message": "No supported browser found. Install Chrome/Chromium (or Microsoft Edge), or set ARCHIFY_CHROME to its executable path.",
+            "subject": {
+              "artifact": "/home/er/mycobot_humble/.archify/architecture-pick-demonstration-20261029-193244/pick-demonstration.html"
+            },
+            "evidence": {
+              "executable": null
+            },
+            "supportedFixes": [
+              "set ARCHIFY_CHROME to a Chrome/Chromium executable (or Microsoft Edge) and rerun browser-check"
+            ]
+          }
+        ],
+        "containment": {
+          "status": "skipped",
+          "policy": "fit-or-reader-declared-readable-vertical-scroll",
+          "viewports": []
+        },
+        "themeStates": {
+          "status": "skipped",
+          "viewports": []
+        },
+        "readability": {
+          "status": "skipped",
+          "minimumProjectedNodeTextPx": 6,
+          "viewports": []
+        },
+        "viewerChrome": {
+          "status": "skipped",
+          "viewports": []
+        },
+        "captures": {
+          "status": "not-requested",
+          "screenshots": [],
+          "contactSheet": null
+        },
+        "sidecars": {
+          "receipt": "pick-demonstration.browser-check.json",
+          "files": []
+        },
+        "error": "No supported browser found. Install Chrome/Chromium (or Microsoft Edge), or set ARCHIFY_CHROME to its executable path."
+      }
+    }
+  },
+  "browserCheck": {
+    "requested": true,
+    "ran": false
+  },
+  "diagnostics": [
+    {
+      "code": "viewer/chrome-unavailable",
+      "severity": "warning",
+      "message": "No supported browser found. Install Chrome/Chromium (or Microsoft Edge), or set ARCHIFY_CHROME to its executable path.",
+      "subject": {
+        "artifact": "/home/er/mycobot_humble/.archify/architecture-pick-demonstration-20261029-193244/pick-demonstration.html"
+      },
+      "evidence": {
+        "executable": null
+      },
+      "supportedFixes": [
+        "set ARCHIFY_CHROME to a Chrome/Chromium executable (or Microsoft Edge) and rerun browser-check"
+      ]
+    }
+  ],
+  "evidence": {
+    "receipt": "/home/er/mycobot_humble/.archify/architecture-pick-demonstration-20261029-193244/pick-demonstration.finalize.json",
+    "summaryReceipt": "/home/er/mycobot_humble/.archify/architecture-pick-demonstration-20261029-193244/pick-demonstration.finalize-summary.json",
+    "browserCheckReceipt": "/home/er/mycobot_humble/.archify/architecture-pick-demonstration-20261029-193244/pick-demonstration.browser-check.json"
+  },
+  "visualReview": "not-requested",
+  "failedStage": "browser-check",
+  "finishedAt": "2026-10-29T18:33:53.525Z",
+  "durationMs": 3620,
+  "update": {
+    "status": "current",
+    "installedVersion": "3.2.0",
+    "availableVersion": "3.2.0",
+    "releaseNotes": null,
+    "checkedAt": "2026-10-27T19:30:00.283Z",
+    "source": "cache",
+    "noticeRequired": false,
+    "noticeText": null
+  }
+}
